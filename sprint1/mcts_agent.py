@@ -81,3 +81,27 @@ class MCTSNode:
             clone._elapsed_steps = game._elapsed_steps
         
         return clone 
+    
+    # Create one child for each possible action of the game,
+    # then apply such action to a copy of the current node environment 
+    # and create such child node with proper information returned from the action executed.
+    def create_child(self):
+
+        if self.done:
+            return
+        
+        child = {}
+        
+        for action in range(self.game_actions):
+            game = self.clone_env_state(self.game)
+            step_out = game.step(action)
+
+            if len(step_out) == 5:
+                observation, reward, terminated, truncated, _ = step_out
+                done = terminated or truncated
+            else:
+                observation, reward, done, _ = step_out
+            
+            child[action] = MCTSNode(game, done, self, observation, action, self.game_name, self.c)
+
+        self.child = child
