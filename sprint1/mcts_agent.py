@@ -44,7 +44,7 @@ class MCTSNode:
             self.game_obs = game.observation_space.shape[0]
 
     # getUCBscore is the formula that gives a value to the node.
-    #MCTS will pick the nodes with the highest value.        
+    # MCTS will pick the nodes with the highest value.        
     def getUCBscore(self):
 
         # Unexplored nodes get a max value to favour exploration
@@ -58,3 +58,26 @@ class MCTSNode:
         
         # Use one of the possible MCTS formula for calculating the node value 
         return (self.T / self.N) + self.c * sqrt(log(top_node.N) / self.N)
+    
+    # Detach the parent node to save memory after the search is done
+    def detach_parent(self):
+        del self.parent
+        self.parent = None
+
+    # Clone the game environment state to be able to simulate future actions 
+    def clone_env_state(self,game):
+        clone = gym.make(self.game_name)
+        clone.reset()
+        src = game.unwrapped
+        dst = clone.unwrapped
+
+        if getattr(src, 'state', None) is not None:
+            dst.state = np.array(src.state, dtype=np.float32).copy()
+
+        if hasattr(src, 'steps_beyond_terminated'):
+            dst.steps_beyond_terminated = src.steps_beyond_terminated
+        
+        if hasattr(game, '_elapsed_steps') and hasattr(clone, '_elapsed_steps'):
+            clone._elapsed_steps = game._elapsed_steps
+        
+        return clone 
