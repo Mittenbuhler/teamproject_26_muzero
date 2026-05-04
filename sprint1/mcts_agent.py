@@ -91,7 +91,7 @@ class MCTSNode:
             return
         
         child = {}
-        
+
         for action in range(self.game_actions):
             game = self.clone_env_state(self.game)
             step_out = game.step(action)
@@ -105,3 +105,34 @@ class MCTSNode:
             child[action] = MCTSNode(game, done, self, observation, action, self.game_name, self.c)
 
         self.child = child
+
+    # Rollout is a random play from a copy of the environment of the current node.
+    # It will output a value for the current node.
+    # -> The value is first random, but the more rollouts the more accurate is the average of the value
+    # for the node. (Core of MCTS algorithm)
+    def rollout(self):
+
+        if self.done:
+            return 0
+        
+        v = 0
+        done = False
+        new_game = self.clone_env_state(self.game)
+
+        while not done:
+            action = new_game.action_space.sample()
+            step_out = new_game.step(action)
+
+            if len(step_out) == 5:
+                observation, reward, terminated, truncated, _ = step_out
+                done = terminated or truncated
+            else:
+                observation, reward, done, _ = step_out
+
+            v = v + reward
+            if done:
+                new_game.close()
+                break
+        return v
+        
+        
