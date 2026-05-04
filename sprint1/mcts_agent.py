@@ -3,4 +3,58 @@ import gym
 import random
 from math import sqrt, log
 
+# MCTS Node class represents a node of the tree and contains information needed for
+# the algorithm to run its search.
 class MCTSNode:
+    def __init__(self, game, done, parent, observation, action_index, game_name, c=1.0):
+
+        # child nodes
+        self.child = None
+
+        # total rewards from MCTS exploration
+        self.T = 0
+
+        # visit count
+        self.N = 0
+
+        # the game environment
+        self.game = game
+
+        # observation of the environment
+        self.observation = observation
+
+        # if game is won/loss/draw
+        self.done = done
+
+        # link to parent node
+        self.parent = parent
+
+        # action index that led to this node
+        self.action_index = action_index
+
+        # game name
+        self.game_name = game_name
+
+        # exploration constant
+        self.c = c
+
+        # get the info from the game environment
+        if game is not None:
+            self.action_space = game.action_space.n
+            self.game_obs = game.observation_space.shape[0]
+
+    # getUCBscore is the formula that gives a value to the node.
+    #MCTS will pick the nodes with the highest value.        
+    def getUCBscore(self):
+
+        # Unexplored nodes get a max value to favour exploration
+        if self.N == 0:
+            return float('inf')
+        
+        # Get information about the parent node of current node
+        top_node = self
+        if top_node.parent:
+            top_node = top_node.parent
+        
+        # Use one of the possible MCTS formula for calculating the node value 
+        return (self.T / self.N) + self.c * sqrt(log(top_node.N) / self.N)
