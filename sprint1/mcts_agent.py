@@ -174,3 +174,27 @@ class MCTSNode:
             parent = parent.parent
             parent.N += 1
             parent.T += current.T
+    
+    # after the search is done, the values should be statistically accurate.
+    # this function will pick at random one of the node with highest visit count (should have a good value anyway)
+
+    def next(self):
+
+        if self.done:
+            raise ValueError("game has ended")
+        
+        if not self.child:
+            raise ValueError("no children found and game hasn\'t ended")
+        
+        child = self.child
+
+        max_N = max(node.N for node in child.values())
+
+        max_children = [c for a , c in child.items() if c.N == max_N]
+
+        if len(max_children) == 0:
+            print("error zero length", max_N)
+
+        max_child = random.choice(max_children)
+
+        return max_child, max_child.action_index
