@@ -134,5 +134,43 @@ class MCTSNode:
                 new_game.close()
                 break
         return v
-        
-        
+    
+    
+    # From the current node, the children which maximize the value of the MCTS formula will be picked
+    # At a leaf: if it was not explored before, a rollout will be done to get a value for the node
+    #otherwise, expand the node by creating its children, pick one at random, do a rollout and update
+    #backpropagate the value up to the root (meaning update value and visit counts)
+    def explore(self):
+
+        #find a leaf node by choosing nodes with max U
+
+        current = self
+
+        while current.child:
+            child = current.child
+            max_U = max(c.getUCBscore() for c in child.values())
+            actions = [a for a, c in child.items() if c.getUCBscore() == max_U]
+            if len(actions) == 0:
+                print("error zero length", max_U)
+            action = random.choice(actions)
+            current = child[action]
+
+        # play a random game, or expand if needed
+        if current.N < 1:
+            current.T = current.T + current.rollout()
+        else:
+            current.create_child()
+            if current.child:
+                current = random.choice(current.child)
+            current.T = current.T + current.rollout()
+
+        current.N += 1
+
+        #update statistics and backpropagate
+
+        parent = current 
+
+        while parent.parent:
+            parent = parent.parent
+            parent.N += 1
+            parent.T += current.T
