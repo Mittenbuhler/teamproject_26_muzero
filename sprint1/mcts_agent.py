@@ -198,3 +198,74 @@ class MCTSNode:
         max_child = random.choice(max_children)
 
         return max_child, max_child.action_index
+    
+
+#The agent can be used with different games
+class MCTSAgent:
+
+    """
+    Initialize the Agent
+
+    Args: 
+    game_name: Name of the gym environment
+    explore_iterations: Number of iterations per move 
+    c: Exploration constant
+    """
+    def __init__(self, game_name, explore_iterations=100, c=1.0):
+
+        self.game_name = game_name
+        self.explore_iterations = explore_iterations
+        self.c = c
+        self.current_tree = None
+
+    """
+    Initialize the Agent
+
+    Args: 
+    game: gym environment instance
+    observation: current observation of the environment
+    done: if the game is won/loss/draw
+
+    Returns:
+    action: the chosen action
+    new_tree: Updated MCTS tree for the next step
+    """
+    def get_action(self, game, observation, done):
+        
+        #Initialize or update the tree
+        if self.current_tree is None or done:
+            new_game = self.clone_env(game)
+            self.current_tree = MCTSNode(new_game, False, None, observation, 0, self.game_name, self.c)
+
+        # Perform MCTS search
+        for i in range(self.explore_iterations):
+            self.current_tree.explore()
+
+        # Get best action
+        next_tree, action = self.current_tree.next()
+        next_tree.detach_parent()
+        self.current_tree = next_tree
+
+        return action
+    
+    # Clone the environment state
+    def clone_env(self,game):
+        clone = gym.make(self.game_name)
+        clone.reset()
+        src = game.unwrapped
+        dst = clone.unwrapped
+
+        if getattr(src, 'state', None) is not None:
+            dst.state = np.array(src.state, dtype=np.float32).copy()
+
+        if hasattr(src, 'steps_beyond_terminated'):
+            dst.steps_beyond_terminated = src.steps_beyond_terminated
+        
+        if hasattr(game, '_elapsed_steps') and hasattr(clone, '_elapsed_steps'):
+            clone._elapsed_steps = game._elapsed_steps
+        
+        return clone
+    
+    # Reset the agent's internal tree
+    def reset(self):
+        self.current_tree = None
