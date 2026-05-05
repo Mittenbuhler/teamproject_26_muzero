@@ -1,5 +1,5 @@
 import numpy as np
-import gym
+import gymnasium as gym
 import random
 from math import sqrt, log
 
@@ -92,7 +92,7 @@ class MCTSNode:
         
         child = {}
 
-        for action in range(self.game_actions):
+        for action in range(self.action_space):
             game = self.clone_env_state(self.game)
             step_out = game.step(action)
 
