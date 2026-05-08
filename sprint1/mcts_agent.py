@@ -41,7 +41,10 @@ class MCTSNode:
         # get the info from the game environment
         if game is not None:
             self.action_space = game.action_space.n
-            self.game_obs = game.observation_space.shape[0]
+            if len(game.observation_space.shape) > 0:
+                self.game_obs = game.observation_space.shape[0]
+            else:
+                self.game_obs = game.observation_space.n
 
     # getUCBscore is the formula that gives a value to the node.
     # MCTS will pick the nodes with the highest value.        
