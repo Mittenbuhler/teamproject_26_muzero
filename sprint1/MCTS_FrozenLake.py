@@ -1,6 +1,6 @@
 import gymnasium as gym
 import imageio
-from mcts_agent import MCTSAgent
+from sprint1.mcts_agent import MCTSAgent
 
 def main():
     # Create the FrozenLake environment (deterministic for easier learning)
