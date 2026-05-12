@@ -1,7 +1,13 @@
 import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
 from moviepy.editor import VideoFileClip
-from mcts_agent import MCTSAgent
+from sprint1.mcts_agent import MCTSAgent # Lösung ??
+
+
+# Number of episodes to run
+num_episodes = 10
+max_steps = 50
+
 
 def main():
     # Create the CartPole environment
@@ -15,9 +21,7 @@ def main():
     # Initialize the MCTS agent
     agent = MCTSAgent('CartPole-v1', explore_iterations=5, c=1.0)
 
-    # Number of episodes to run
-    num_episodes = 10
-    max_steps = 50
+    
 
     for episode in range(num_episodes):
         observation, info = env.reset()
