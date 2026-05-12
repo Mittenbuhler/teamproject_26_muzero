@@ -5,7 +5,7 @@ from mcts_agent import MCTSAgent
 
 def main():
     # Create the CartPole environment
-    env = gym.make('CartPole-v1', render_mode=None)
+    env = gym.make('CartPole-v1', render_mode='rgb_array')
 
     # Wrap the environment to record videos 
     env = RecordVideo(
