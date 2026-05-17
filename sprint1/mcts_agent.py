@@ -6,7 +6,7 @@ from math import sqrt, log
 # MCTS Node class represents a node of the tree and contains information needed for
 # the algorithm to run its search.
 class MCTSNode:
-    def __init__(self, game, done, parent, observation, action_index, game_name, c=1.0):
+    def __init__(self, game, done, parent, observation, action_index, game_name, c=1.0, env_factory=None):
 
         # child nodes
         self.child = None
@@ -37,6 +37,9 @@ class MCTSNode:
 
         # exploration constant
         self.c = c
+
+        # environment factory for creating wrapped environments
+        self.env_factory = env_factory
 
         # get the info from the game environment
         if game is not None:
@@ -69,8 +72,16 @@ class MCTSNode:
 
     # Clone the game environment state to be able to simulate future actions 
     def clone_env_state(self,game):
-        clone = gym.make(self.game_name)
-        clone.reset()
+        # Use env_factory if available (for wrapped environments)
+        if self.env_factory is not None:
+            clone = self.env_factory()
+            clone.reset()
+        else:
+            # Extract the base game name from the environment's spec
+            base_game_name = game.unwrapped.spec.id
+            clone = gym.make(base_game_name)
+            clone.reset()
+        
         src = game.unwrapped
         dst = clone.unwrapped
 
@@ -105,7 +116,7 @@ class MCTSNode:
             else:
                 observation, reward, done, _ = step_out
             
-            child[action] = MCTSNode(game, done, self, observation, action, self.game_name, self.c)
+            child[action] = MCTSNode(game, done, self, observation, action, self.game_name, self.c, env_factory=self.env_factory)
 
         self.child = child
 
@@ -210,13 +221,15 @@ class MCTSAgent:
     Initialize the Agent
 
     Args: 
-    game_name: Name of the gym environment
+    game_name: Name of the gym environment (for backward compatibility)
+    env_factory: Callable that returns a fresh wrapped environment instance
     explore_iterations: Number of iterations per move 
     c: Exploration constant
     """
-    def __init__(self, game_name, explore_iterations=100, c=1.0):
+    def __init__(self, game_name=None, env_factory=None, explore_iterations=100, c=1.0):
 
         self.game_name = game_name
+        self.env_factory = env_factory
         self.explore_iterations = explore_iterations
         self.c = c
         self.current_tree = None
@@ -238,12 +251,11 @@ class MCTSAgent:
         #Initialize or update the tree
         if self.current_tree is None or done:
             new_game = self.clone_env(game)
-            self.current_tree = MCTSNode(new_game, False, None, observation, 0, self.game_name, self.c)
+            self.current_tree = MCTSNode(new_game, False, None, observation, 0, self.game_name, self.c, env_factory=self.env_factory)
 
         # Perform MCTS search
         for i in range(self.explore_iterations):
             self.current_tree.explore()
-
         # Get best action
         next_tree, action = self.current_tree.next()
         next_tree.detach_parent()
@@ -252,21 +264,24 @@ class MCTSAgent:
         return action
     
     # Clone the environment state
-    def clone_env(self,game):
-        clone = gym.make(self.game_name)
-        clone.reset()
-        src = game.unwrapped
-        dst = clone.unwrapped
-
-        if getattr(src, 'state', None) is not None:
-            dst.state = np.array(src.state, dtype=np.float32).copy()
-
-        if hasattr(src, 'steps_beyond_terminated'):
-            dst.steps_beyond_terminated = src.steps_beyond_terminated
-        
-        if hasattr(game, '_elapsed_steps') and hasattr(clone, '_elapsed_steps'):
-            clone._elapsed_steps = game._elapsed_steps
-        
+    def clone_env(self, game):
+        if self.env_factory is not None:
+            # Use the factory to create a fresh wrapped environment
+            clone = self.env_factory()
+            clone.reset()
+            return clone
+        else:
+            # Original logic: vanilla game envs with no wrappers
+            clone = gym.make(self.game_name)
+            clone.reset()
+            src = game.unwrapped
+            dst = clone.unwrapped
+            if getattr(src, 'state', None) is not None:
+                dst.state = np.array(src.state, dtype=np.float32).copy()
+            if hasattr(src, 'steps_beyond_terminated'):
+                dst.steps_beyond_terminated = src.steps_beyond_terminated
+            if hasattr(game, '_elapsed_steps') and hasattr(clone, '_elapsed_steps'):
+                clone._elapsed_steps = src._elapsed_steps
         return clone
     
     # Reset the agent's internal tree
