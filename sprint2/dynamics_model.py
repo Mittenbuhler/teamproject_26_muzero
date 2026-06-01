@@ -25,7 +25,8 @@ class DynamicsModel(nn.Module):
         output_dim,
         hidden_dim=64,
         state_dim=None,
-        action_dim=None
+        action_dim=None,
+        discrete_state=False
     ):
         super().__init__()
 
@@ -34,6 +35,7 @@ class DynamicsModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.discrete_state = discrete_state
 
         self.layer1 = nn.Linear(input_dim, hidden_dim)
         self.layer2 = nn.Linear(hidden_dim, hidden_dim)
@@ -113,10 +115,19 @@ class DynamicsModel(nn.Module):
         if len(true_reward.shape) == 1:
             true_reward = true_reward.unsqueeze(1)
 
-        state_loss = F.mse_loss(
-            pred_next_state,
-            true_next_state
-        )
+        if self.discrete_state:
+            if len(true_next_state.shape) > 1:
+                true_next_state = torch.argmax(true_next_state, dim=1)
+
+            state_loss = F.cross_entropy(
+                pred_next_state,
+                true_next_state.long()
+            )
+        else:
+            state_loss = F.mse_loss(
+                pred_next_state,
+                true_next_state
+            )
 
         reward_loss = F.mse_loss(
             pred_reward,
@@ -143,6 +154,22 @@ class DynamicsModel(nn.Module):
 
         return vec
 
+    def one_hot_state(self, state):
+        """
+        Convert an integer state to a one-hot tensor.
+        """
+
+        if self.state_dim is None:
+            raise ValueError("state_dim is needed to one-hot encode states")
+
+        if isinstance(state, torch.Tensor):
+            state = int(state.item())
+
+        vec = torch.zeros(self.state_dim)
+        vec[int(state)] = 1.0
+
+        return vec
+
     @torch.no_grad()
     def predict(self, state, action, device=None):
         """
@@ -158,10 +185,15 @@ class DynamicsModel(nn.Module):
         was_training = self.training
         self.eval()
 
-        state_tensor = torch.tensor(
-            state,
-            dtype=torch.float32
-        ).unsqueeze(0).to(device)
+        if self.discrete_state:
+            state_tensor = self.one_hot_state(
+                state
+            ).unsqueeze(0).to(device)
+        else:
+            state_tensor = torch.tensor(
+                state,
+                dtype=torch.float32
+            ).unsqueeze(0).to(device)
 
         action_tensor = self.one_hot_action(
             action
@@ -172,12 +204,15 @@ class DynamicsModel(nn.Module):
             action_tensor
         )
 
-        next_state = (
-            pred_next_state
-            .squeeze(0)
-            .cpu()
-            .numpy()
-        )
+        if self.discrete_state:
+            next_state = int(torch.argmax(pred_next_state, dim=1).item())
+        else:
+            next_state = (
+                pred_next_state
+                .squeeze(0)
+                .cpu()
+                .numpy()
+            )
 
         reward = (
             pred_reward

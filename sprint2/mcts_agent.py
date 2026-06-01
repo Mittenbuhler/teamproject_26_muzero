@@ -17,7 +17,9 @@ class MCTSNode:
         c=1.0,
         env_factory=None,
         dynamics_model=None,
-        reward=0.0
+        reward=0.0,
+        terminal_fn=None,
+        discount=1.0
     ):
 
         # child nodes
@@ -58,6 +60,8 @@ class MCTSNode:
 
         # optional learned model used for expansion
         self.dynamics_model = dynamics_model
+        self.terminal_fn = terminal_fn
+        self.discount = discount
 
         # get the info from the game environment
         if game is not None:
@@ -108,6 +112,12 @@ class MCTSNode:
         if getattr(src, 'state', None) is not None:
             dst.state = np.array(src.state, dtype=np.float32).copy()
 
+        if hasattr(src, 's'):
+            dst.s = src.s
+
+        if hasattr(src, 'lastaction'):
+            dst.lastaction = src.lastaction
+
         if hasattr(src, 'steps_beyond_terminated'):
             dst.steps_beyond_terminated = src.steps_beyond_terminated
         
@@ -120,6 +130,9 @@ class MCTSNode:
         """
         Infer CartPole termination from a predicted observation.
         """
+
+        if self.terminal_fn is not None:
+            return self.terminal_fn(observation)
 
         if self.game_name is None or "CartPole" not in self.game_name:
             return False
@@ -165,6 +178,12 @@ class MCTSNode:
                 if getattr(game.unwrapped, 'state', None) is not None:
                     game.unwrapped.state = np.array(observation, dtype=np.float32).copy()
 
+                if hasattr(game.unwrapped, 's'):
+                    game.unwrapped.s = int(observation)
+
+                if hasattr(game.unwrapped, 'lastaction'):
+                    game.unwrapped.lastaction = action
+
                 if hasattr(game, '_elapsed_steps'):
                     game._elapsed_steps += 1
             else:
@@ -187,7 +206,9 @@ class MCTSNode:
                 self.c,
                 env_factory=self.env_factory,
                 dynamics_model=self.dynamics_model,
-                reward=reward
+                reward=reward,
+                terminal_fn=self.terminal_fn,
+                discount=self.discount
             )
 
         self.child = child
@@ -205,6 +226,7 @@ class MCTSNode:
         
         done = False
         new_game = self.clone_env_state(self.game)
+        discount = self.discount
 
         while not done:
             action = new_game.action_space.sample()
@@ -216,7 +238,8 @@ class MCTSNode:
             else:
                 observation, reward, done, _ = step_out
 
-            v = v + reward
+            v = v + discount * reward
+            discount = discount * self.discount
             if done:
                 new_game.close()
                 break
@@ -244,12 +267,14 @@ class MCTSNode:
 
         # play a random game, or expand if needed
         if current.N < 1:
-            current.T = current.T + current.rollout()
+            rollout_value = current.rollout()
+            current.T = current.T + rollout_value
         else:
             current.create_child()
             if current.child:
                 current = random.choice(list(current.child.values()))
-            current.T = current.T + current.rollout()
+            rollout_value = current.rollout()
+            current.T = current.T + rollout_value
 
         current.N += 1
 
@@ -260,7 +285,7 @@ class MCTSNode:
         while parent.parent:
             parent = parent.parent
             parent.N += 1
-            parent.T += current.T
+            parent.T += rollout_value
     
     # after the search is done, the values should be statistically accurate.
     # this function will pick at random one of the node with highest visit count (should have a good value anyway)
@@ -305,7 +330,9 @@ class MCTSAgent:
         env_factory=None,
         explore_iterations=100,
         c=1.0,
-        dynamics_model=None
+        dynamics_model=None,
+        terminal_fn=None,
+        discount=1.0
     ):
 
         self.game_name = game_name
@@ -314,6 +341,8 @@ class MCTSAgent:
         self.c = c
         self.current_tree = None
         self.dynamics_model = dynamics_model
+        self.terminal_fn = terminal_fn
+        self.discount = discount
 
     """
     Initialize the Agent
@@ -341,7 +370,9 @@ class MCTSAgent:
                 self.game_name,
                 self.c,
                 env_factory=self.env_factory,
-                dynamics_model=self.dynamics_model
+                dynamics_model=self.dynamics_model,
+                terminal_fn=self.terminal_fn,
+                discount=self.discount
             )
 
         # Perform MCTS search
@@ -360,19 +391,23 @@ class MCTSAgent:
             # Use the factory to create a fresh wrapped environment
             clone = self.env_factory()
             clone.reset()
-            return clone
         else:
             # Original logic: vanilla game envs with no wrappers
             clone = gym.make(self.game_name)
             clone.reset()
-            src = game.unwrapped
-            dst = clone.unwrapped
-            if getattr(src, 'state', None) is not None:
-                dst.state = np.array(src.state, dtype=np.float32).copy()
-            if hasattr(src, 'steps_beyond_terminated'):
-                dst.steps_beyond_terminated = src.steps_beyond_terminated
-            if hasattr(game, '_elapsed_steps') and hasattr(clone, '_elapsed_steps'):
-                clone._elapsed_steps = game._elapsed_steps
+
+        src = game.unwrapped
+        dst = clone.unwrapped
+        if getattr(src, 'state', None) is not None:
+            dst.state = np.array(src.state, dtype=np.float32).copy()
+        if hasattr(src, 's'):
+            dst.s = src.s
+        if hasattr(src, 'lastaction'):
+            dst.lastaction = src.lastaction
+        if hasattr(src, 'steps_beyond_terminated'):
+            dst.steps_beyond_terminated = src.steps_beyond_terminated
+        if hasattr(game, '_elapsed_steps') and hasattr(clone, '_elapsed_steps'):
+            clone._elapsed_steps = game._elapsed_steps
         return clone
     
     # Reset the agent's internal tree

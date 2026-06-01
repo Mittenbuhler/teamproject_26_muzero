@@ -249,6 +249,7 @@ def save_checkpoint(path, model, optimizer, args, metrics):
             "state_dim": args.state_dim,
             "action_dim": args.action_dim,
             "hidden_dim": args.hidden_dim,
+            "discrete_state": model.discrete_state,
             "metrics": metrics
         },
         path
@@ -278,7 +279,8 @@ def load_dynamics_model(path, device=None):
         output_dim=output_dim,
         hidden_dim=checkpoint["hidden_dim"],
         state_dim=state_dim,
-        action_dim=action_dim
+        action_dim=action_dim,
+        discrete_state=checkpoint.get("discrete_state", False)
     ).to(device)
 
     model_state_dict = checkpoint["model_state_dict"]
