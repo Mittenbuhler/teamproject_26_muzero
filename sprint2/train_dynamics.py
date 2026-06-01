@@ -263,7 +263,11 @@ def load_dynamics_model(path, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(
+        path,
+        map_location=device,
+        weights_only=False
+    )
     state_dim = checkpoint["state_dim"]
     action_dim = checkpoint["action_dim"]
     input_dim = checkpoint.get("input_dim", state_dim + action_dim)
