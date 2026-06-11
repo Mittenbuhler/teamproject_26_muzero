@@ -39,7 +39,7 @@ class AlphaZeroNetworks:
         self.device = device if torch.cuda.is_available() and device == 'cuda' else 'cpu'
 
         if action_space_type == ActionSpaceType.DISCRETE:
-            assert isinstace(action_dim, int), "For discrete action space, action_dim should be an integer."
+            assert isinstance(action_dim, int), "For discrete action space, action_dim should be an integer."
 
             self.policy_network = DiscretePolicyNetwork(action_dim, hidden_states).to(self.device)
         elif action_space_type == ActionSpaceType.CONTINUOUS:
