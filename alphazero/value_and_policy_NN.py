@@ -1,4 +1,6 @@
+from functorch import dim
 import torch
+from torch.distributed import log
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Union, Tuple, Optional
@@ -151,3 +153,143 @@ class DiscretePolicyNetwork(nn.Module):
         logits = self.dense2(F.relu(self.dense1(state)))
         logits = F.log_softmax(self.dense3(logits), dim=-1)
         return logits.gather(1, actions.unsqueeze(-1)).squeeze(-1)
+    
+class ContinuousPolicyNetwork(nn.Module):
+    """
+    Policy Network for continuous action spaces. Takes the state as input and outputs the mean and log std of a Gaussian distribution over actions.
+    """
+    def __init__(self, action_dim: Tuple[int, ...], hidden_states: int = 64, action_bounds: Tuple[float, float] = (-1, 1)):
+        super(ContinuousPolicyNetwork, self).__init__()
+
+        self.action_dim = action_dim
+        self.action_size = int(torch.prod(torch.tensor(action_dim)))
+        self.hidden_states = hidden_states
+        self.action_bounds = action_bounds
+
+        self.dense1 = nn.Linear(hidden_states, hidden_states)
+        self.dense2 = nn.Linear(hidden_states, hidden_states)
+
+        self.mean_head = nn.Linear(hidden_states, self.action_size)
+        self.log_std_head = nn.Linear(hidden_states, self.action_size)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        
+        nn.init.constant_(self.log_std_head.bias, -0.5)  # Initialize log std to a small value (std ~ 0.6)
+
+    def forward(self, x):
+        """Forward pass.
+
+        Args:
+            x: Input state tensor of shape (batch_size, hidden_states).
+
+        Returns:
+            mean: Mean of the Gaussian distribution over actions.
+            log_std: Log standard deviation of the Gaussian distribution over actions.
+        """
+        x = F.relu(self.dense1(x))
+        x = F.relu(self.dense2(x))
+        
+        mean = self.mean_head(x)
+        log_std = self.log_std_head(x)
+        log_std = torch.clamp(log_std, -20, 2)  # Clamp log std to prevent numerical issues
+
+        mean = torch.tanh(mean) 
+        min_bound, max_bound = self.action_bounds
+        mean = min_bound + (mean + 1) * 0.5 * (max_bound - min_bound)  # Scale mean to action bounds
+        
+        return mean, log_std
+    
+    def sample_action(self, state, deterministic: bool = False):
+        """Sample an action from the policy given the state.
+        
+        Args:
+            state: The current state tensor of shape (batch_size, hidden_states).
+            deterministic: Whether to select the mean action (True) or sample from the distribution (False).
+
+        Returns:
+            action: The sampled action tensor.
+            log_prob: The log probability of the sampled action.
+        """
+        mean, log_std = self.forward(state)
+        std = torch.exp(log_std)
+
+        if deterministic:
+            action = mean
+            log_prob = None
+        else:
+            normal = torch.distributions.Normal(mean, std)
+            action = normal.rsample()  # Reparameterization trick for backpropagation
+            log_prob = normal.log_prob(action).sum(dim=-1)
+
+        # Clamp action to bounds
+        action = torch.clamp(action, self.action_bounds[0], self.action_bounds[1])
+
+        if len(self.action_dim) > 1:
+            action = action.view(-1, *self.action_dim)  # Reshape to original action dimensions
+
+        return action, log_prob  
+    
+    def get_log_probs(self, state, actions):
+        """Get log probabilities of the selected actions."""
+        mean, log_std = self.forward(state)
+        std = torch.exp(log_std)
+
+        dist = torch.distributions.Normal(mean, std)
+        log_probs = dist.log_prob(actions).sum(dim=-1)
+
+        return log_probs
+    
+    def entropy(self, state):
+        """Calculate the entropy of the action distribution given the state."""
+        _, log_std = self.forward(state)
+        std = torch.exp(log_std)
+
+        return torch.sum(torch.log(std * torch.sqrt(2 * torch.pi * torch.exp(1))), dim=-1)
+
+class ValueNetwork(nn.Module):
+    """
+    Value Network. Takes the state as input and outputs a scalar value representing the expected return from that state.
+    """
+    def __init__(self, hidden_states: int = 64):
+        super(ValueNetwork, self).__init__()
+
+        self.hidden_states = hidden_states
+
+        self.dense1 = nn.Linear(hidden_states, hidden_states)
+        self.dense2 = nn.Linear(hidden_states, hidden_states)
+        self.dense3 = nn.Linear(hidden_states, 1)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias, 0)
+
+    def forward(self, x):
+        x = F.relu(self.dense1(x))
+        x = F.relu(self.dense2(x))
+        value = self.dense3(x)
+        return torch.tanh(value)  # Output value in range [-1, 1]
+    
+    def get_value(self, state):
+        """Get the value of the given state."""
+        self.eval()
+        with torch.no_grad():
+            if not isinstance(state, torch.Tensor):
+                state = torch.FloatTensor(state)
+            if len(state.shape) == 1:
+                state = state.unsqueeze(0)  # Add batch dimension
+            state = state.to(next(self.parameters()).device)
+            value = self.forward(state)
+
+            return value.item() if value.shape[0] == 1 else value.squeeze(-1)
