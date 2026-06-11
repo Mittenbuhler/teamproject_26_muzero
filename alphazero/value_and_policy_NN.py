@@ -293,3 +293,60 @@ class ValueNetwork(nn.Module):
             value = self.forward(state)
 
             return value.item() if value.shape[0] == 1 else value.squeeze(-1)
+        
+class CombinedNetwork(nn.Module):
+    """
+    Combined Network for both value and policy. This can be used to share parameters between the two networks if desired.
+    """
+    def __init__(self, action_space_type: str, action_dim: Union[int, Tuple[int, ...]] = None, hidden_states: int = 64, continuous_action_bounds: Optional[Tuple[float, float]] = (-1, 1)):
+        super(CombinedNetwork, self).__init__()
+
+        self.action_space_type = action_space_type
+        self.action_dim = action_dim
+        self.hidden_states = hidden_states
+
+        self.shared_dense1 = nn.Linear(hidden_states, hidden_states)
+        self.shared_dense2 = nn.Linear(hidden_states, hidden_states)
+
+        self.value_head = nn.Linear(hidden_states, 1)
+
+        if action_space_type == ActionSpaceType.DISCRETE:
+            assert isinstance(action_dim, int), "For discrete action space, action_dim should be an integer."
+            self.policy_head = nn.Linear(hidden_states, action_dim)
+            self.policy_head_activation = nn.LogSoftmax(dim=-1)
+        else:
+            if isinstance(action_dim, int):
+                action_dim = (action_dim,)
+            self.action_size = int(torch.prod(torch.tensor(action_dim)))
+            self.mean_head = nn.Linear(hidden_states, self.action_size)
+            self.log_std_head = nn.Linear(hidden_states, self.action_size)
+            self.continuous_action_bounds = continuous_action_bounds
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias, 0)
+
+    def forward(self, x):
+        x = F.relu(self.shared_dense1(x))
+        x = F.relu(self.shared_dense2(x))
+
+        value = torch.tanh(self.value_head(x))  # Value output in range [-1, 1]
+
+        if self.action_space_type == ActionSpaceType.DISCRETE:
+            policy = self.policy_activation(self.policy_head(x))  # Log probabilities for discrete actions
+            return policy, value
+        else:
+            mean = self.mean_head(x)
+            log_std = self.log_std_head(x)
+            log_std = torch.clamp(log_std, -20, 2)  # Clamp log std to prevent numerical issues
+
+            mean = torch.tanh(mean) 
+            min_bound, max_bound = self.continuous_action_bounds
+            mean = min_bound + (mean + 1) * 0.5 * (max_bound - min_bound)  # Scale mean to action bounds
+
+        return (mean, log_std), value
