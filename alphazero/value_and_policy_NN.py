@@ -107,7 +107,11 @@ class AlphaZeroNetworks:
                 state = state.unsqueeze(0)  # Add batch dimension
             state = state.to(self.device)
 
-            return self.policy_network.get_action(state, deterministic)
+            if hasattr(self.policy_network, 'get_action'):
+                return self.policy_network.get_action(state, deterministic)
+
+            action, _ = self.policy_network.sample_action(state, deterministic)
+            return action
         
 class DiscretePolicyNetwork(nn.Module):
     """
@@ -130,7 +134,7 @@ class DiscretePolicyNetwork(nn.Module):
             if isinstance(module, nn.Linear):
                 nn.init.kaiming_normal_(module.weight, mode = 'fan_in', nonlinearity = 'relu')
                 if module.bias is not None:
-                    nn.init.zeros_(module.bias, 0)
+                    nn.init.constant_(module.bias, 0)
 
     def forward(self, x):
         x = F.relu(self.dense1(x))
@@ -206,6 +210,11 @@ class ContinuousPolicyNetwork(nn.Module):
         
         return mean, log_std
     
+    def get_action(self, state, deterministic: bool = False):
+        """Compatibility wrapper for the shared action-selection interface."""
+        action, _ = self.sample_action(state, deterministic)
+        return action
+
     def sample_action(self, state, deterministic: bool = False):
         """Sample an action from the policy given the state.
         
@@ -273,7 +282,7 @@ class ValueNetwork(nn.Module):
             if isinstance(module, nn.Linear):
                 nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
                 if module.bias is not None:
-                    nn.init.zeros_(module.bias, 0)
+                    nn.init.constant_(module.bias, 0)
 
     def forward(self, x):
         x = F.relu(self.dense1(x))
@@ -350,3 +359,44 @@ class CombinedNetwork(nn.Module):
             mean = min_bound + (mean + 1) * 0.5 * (max_bound - min_bound)  # Scale mean to action bounds
 
         return (mean, log_std), value
+    
+
+
+
+# Beispiel für die Verwendung
+if __name__ == "__main__":
+    HIDDEN_STATES = 64
+    
+    # Beispiel 1: Diskreter Aktionsraum (z.B. Tic-Tac-Toe, Schach, Go)
+    print("=== Diskreter Aktionsraum ===")
+    discrete_net = AlphaZeroNetworks(
+        action_space_type='discrete',
+        action_dim=9,  # 9 mögliche Aktionen
+        hidden_states=HIDDEN_STATES
+    )
+    
+    sample_state = torch.randn(1, HIDDEN_STATES)
+    action_probs = discrete_net.policy_network(sample_state)
+    action = discrete_net.get_action(sample_state, deterministic=False)
+    
+    print(f"Aktionswahrscheinlichkeiten Shape: {action_probs.shape}")
+    print(f"Gewählte Aktion: {action}")
+    print(f"Zustandswert: {discrete_net.value_network(sample_state).item():.3f}")
+    
+    # Beispiel 2: Kontinuierlicher Aktionsraum (z.B. Robot Control, Pendulum)
+    print("\n=== Kontinuierlicher Aktionsraum ===")
+    continuous_net = AlphaZeroNetworks(
+        action_space_type='continuous',
+        action_dim=2,  # 2-dimensionale Aktion (z.B. Kraft in x und y)
+        hidden_states=HIDDEN_STATES,
+        continuous_action_bounds=(-2.0, 2.0)
+    )
+    
+    continuous_action = continuous_net.get_action(sample_state, deterministic=False)
+    print(f"Kontinuierliche Aktion: {continuous_action}")
+    print(f"Aktions-Shape: {continuous_action.shape}")
+    
+    # Entropie für Exploration (kontinuierlich)
+    mean, log_std = continuous_net.policy_network(sample_state)
+    print(f"Mittelwert: {mean.squeeze().detach().numpy()}")
+    print(f"Std: {torch.exp(log_std).squeeze().detach().numpy()}")
