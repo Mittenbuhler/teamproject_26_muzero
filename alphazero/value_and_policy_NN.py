@@ -18,6 +18,7 @@ class AlphaZeroNetworks:
                  action_space_type: str = ActionSpaceType.DISCRETE,
                  action_dim: Union[int, Tuple[int, ...]] = None,
                  hidden_states: int = 64,
+                 input_dim: Optional[int] = None,
                  continuous_action_bounds: Optional[Tuple[float, float]] = (-1, 1),
                  device: str = 'cuda'):
         
@@ -28,6 +29,7 @@ class AlphaZeroNetworks:
             action_space_type: Type of action space (discrete or continuous).
             action_dim: Dimension of the action space (int for discrete, int or tuple for continuous).
             hidden_states: Number of hidden states in the networks.
+            input_dim: Number of input features for the game state. If None, hidden_states is used as a fallback.
             continuous_action_bounds: Bounds for continuous actions (min, max).
             device: Device to run the networks on ('cuda' or 'cpu').
         """
@@ -35,24 +37,25 @@ class AlphaZeroNetworks:
         self.action_space_type = action_space_type
         self.action_dim = action_dim
         self.hidden_states = hidden_states
+        self.input_dim = input_dim if input_dim is not None else hidden_states
         self.continuous_action_bounds = continuous_action_bounds
         self.device = device if torch.cuda.is_available() and device == 'cuda' else 'cpu'
 
         if action_space_type == ActionSpaceType.DISCRETE:
             assert isinstance(action_dim, int), "For discrete action space, action_dim should be an integer."
 
-            self.policy_network = DiscretePolicyNetwork(action_dim, hidden_states).to(self.device)
+            self.policy_network = DiscretePolicyNetwork(action_dim, hidden_states, input_dim=self.input_dim).to(self.device)
         elif action_space_type == ActionSpaceType.CONTINUOUS:
             assert action_dim is not None, "For continuous action space, action_dim should be specified."
 
             if isinstance(action_dim, int):
                 action_dim = (action_dim,)
-            self.policy_network = ContinuousPolicyNetwork(action_dim, hidden_states, continuous_action_bounds).to(self.device)
+            self.policy_network = ContinuousPolicyNetwork(action_dim, hidden_states, continuous_action_bounds, input_dim=self.input_dim).to(self.device)
 
         else:
             raise ValueError("Invalid action space type. Must be 'discrete' or 'continuous'.")
         
-        self.value_network = ValueNetwork(hidden_states).to(self.device)
+        self.value_network = ValueNetwork(hidden_states, input_dim=self.input_dim).to(self.device)
 
     def to(self, device: str):
         """Move the networks to the specified device."""
@@ -79,6 +82,7 @@ class AlphaZeroNetworks:
             'action_space_type': self.action_space_type,
             'action_dim': self.action_dim,
             'hidden_states': self.hidden_states,
+            'input_dim': self.input_dim,
             'continuous_action_bounds': self.continuous_action_bounds
         }, f"{path_prefix}_models.pth")
 
@@ -117,13 +121,14 @@ class DiscretePolicyNetwork(nn.Module):
     """
     Policy Network for discrete action spaces. Takes the state as input and outputs a probability distribution over actions.
     """
-    def __init__(self, num_actions: int, hidden_states: int = 64):
+    def __init__(self, num_actions: int, hidden_states: int = 64, input_dim: Optional[int] = None):
         super(DiscretePolicyNetwork, self).__init__()
 
         self.num_actions = num_actions
         self.hidden_states = hidden_states
+        self.input_dim = input_dim if input_dim is not None else hidden_states
 
-        self.dense1 = nn.Linear(hidden_states, hidden_states)
+        self.dense1 = nn.Linear(self.input_dim, hidden_states)
         self.dense2 = nn.Linear(hidden_states, hidden_states)
         self.dense3 = nn.Linear(hidden_states, num_actions)
 
@@ -162,15 +167,16 @@ class ContinuousPolicyNetwork(nn.Module):
     """
     Policy Network for continuous action spaces. Takes the state as input and outputs the mean and log std of a Gaussian distribution over actions.
     """
-    def __init__(self, action_dim: Tuple[int, ...], hidden_states: int = 64, action_bounds: Tuple[float, float] = (-1, 1)):
+    def __init__(self, action_dim: Tuple[int, ...], hidden_states: int = 64, action_bounds: Tuple[float, float] = (-1, 1), input_dim: Optional[int] = None):
         super(ContinuousPolicyNetwork, self).__init__()
 
         self.action_dim = action_dim
         self.action_size = int(torch.prod(torch.tensor(action_dim)))
         self.hidden_states = hidden_states
+        self.input_dim = input_dim if input_dim is not None else hidden_states
         self.action_bounds = action_bounds
 
-        self.dense1 = nn.Linear(hidden_states, hidden_states)
+        self.dense1 = nn.Linear(self.input_dim, hidden_states)
         self.dense2 = nn.Linear(hidden_states, hidden_states)
 
         self.mean_head = nn.Linear(hidden_states, self.action_size)
@@ -266,12 +272,13 @@ class ValueNetwork(nn.Module):
     """
     Value Network. Takes the state as input and outputs a scalar value representing the expected return from that state.
     """
-    def __init__(self, hidden_states: int = 64):
+    def __init__(self, hidden_states: int = 64, input_dim: Optional[int] = None):
         super(ValueNetwork, self).__init__()
 
         self.hidden_states = hidden_states
+        self.input_dim = input_dim if input_dim is not None else hidden_states
 
-        self.dense1 = nn.Linear(hidden_states, hidden_states)
+        self.dense1 = nn.Linear(self.input_dim, hidden_states)
         self.dense2 = nn.Linear(hidden_states, hidden_states)
         self.dense3 = nn.Linear(hidden_states, 1)
 
@@ -307,14 +314,15 @@ class CombinedNetwork(nn.Module):
     """
     Combined Network for both value and policy. This can be used to share parameters between the two networks if desired.
     """
-    def __init__(self, action_space_type: str, action_dim: Union[int, Tuple[int, ...]] = None, hidden_states: int = 64, continuous_action_bounds: Optional[Tuple[float, float]] = (-1, 1)):
+    def __init__(self, action_space_type: str, action_dim: Union[int, Tuple[int, ...]] = None, hidden_states: int = 64, input_dim: Optional[int] = None, continuous_action_bounds: Optional[Tuple[float, float]] = (-1, 1)):
         super(CombinedNetwork, self).__init__()
 
         self.action_space_type = action_space_type
         self.action_dim = action_dim
         self.hidden_states = hidden_states
+        self.input_dim = input_dim if input_dim is not None else hidden_states
 
-        self.shared_dense1 = nn.Linear(hidden_states, hidden_states)
+        self.shared_dense1 = nn.Linear(self.input_dim, hidden_states)
         self.shared_dense2 = nn.Linear(hidden_states, hidden_states)
 
         self.value_head = nn.Linear(hidden_states, 1)
