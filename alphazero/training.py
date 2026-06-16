@@ -1,6 +1,3 @@
-#from IPython.display import clear_output
-from fontTools import config
-
 from replay_buffer import ReplayBuffer
 from value_and_policy_NN import AlphaZeroNetworks, ActionSpaceType
 import numpy as np
@@ -56,7 +53,7 @@ def train(config):
     for e in range(config["episodes"]):
 
         reward_e = 0    
-        game = config["make_env"]
+        game = config["make_env"]()
         reset_out = game.reset()
         
         # Handle both old gym and new gymnasium API
