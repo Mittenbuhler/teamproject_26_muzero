@@ -3,7 +3,6 @@ from fontTools import config
 
 from replay_buffer import ReplayBuffer
 from value_and_policy_NN import AlphaZeroNetworks, ActionSpaceType
-#import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -12,11 +11,11 @@ from copy import deepcopy
 from policy_player_MCTS import Policy_Player_MCTS
 from mcts_agent_policyValue import MCTSNode
 
-BUFFER_SIZE = 100   # replay buffer size
-BATCH_SIZE = 32         # minibatch size
+BUFFER_SIZE = 100   
+BATCH_SIZE = 32         
 UPDATE_EVERY = 1
 
-# episodes = 10
+
 
 def train(config):
     rewards = []
@@ -25,8 +24,6 @@ def train(config):
     v_losses = []
     p_losses = []
 
-    # the maximum reward of the current game to scale the values
-    # MAX_REWARD = 500
 
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -35,12 +32,11 @@ def train(config):
     replay_buffer = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE)
 
     # Create the AlphaZero networks with discrete action space
-    # Assuming CartPole-v1 with 2 actions
     networks = AlphaZeroNetworks(
         action_space_type=ActionSpaceType.DISCRETE,
-        action_dim=config["action_dim"],  # CartPole has 2 actions
+        action_dim=config["action_dim"],  
         hidden_states=64,
-        input_dim=config["input_dim"],   # CartPole has 4 state dimensions
+        input_dim=config["input_dim"],   
         device=device.type
     )
 
@@ -80,11 +76,11 @@ def train(config):
         policies = []
         prev_observations = []
         
-        #step = 0
+        
         
         while not done:
             
-            #step = step + 1
+           
         
             mytree, action, ob, p, p_ob = Policy_Player_MCTS(mytree)
             
@@ -103,7 +99,7 @@ def train(config):
                 
             reward_e = reward_e + reward
             
-            #game.render()
+        
                     
             if done:
                 for i in range(len(observations)):
@@ -117,10 +113,6 @@ def train(config):
         
         if (e + 1) % UPDATE_EVERY == 0 and len(replay_buffer) > BATCH_SIZE:   
             
-            # clear output
-            
-            #for i in range(10):
-             #   clear_output(wait=True) 
             
             # update and train the neural networks     
             experiences = replay_buffer.sample()
