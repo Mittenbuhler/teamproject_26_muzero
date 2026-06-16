@@ -16,7 +16,7 @@ def main():
         "input_dim": 4,
         "action_dim": 2,
         "max_reward": 500,
-        "episodes": 10,
+        "episodes": 300,
         "make_env": make_env,
     }
 

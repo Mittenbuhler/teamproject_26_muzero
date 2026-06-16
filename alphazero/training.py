@@ -11,6 +11,7 @@ from mcts_agent_policyValue import MCTSNode
 BUFFER_SIZE = 100   
 BATCH_SIZE = 32         
 UPDATE_EVERY = 1
+LOSS_AVG_WINDOW = 10
 
 
 
@@ -47,7 +48,7 @@ def train(config):
 
     # Loss functions
     mse_loss = nn.MSELoss()
-    crossentropy_loss = nn.CrossEntropyLoss()
+    policy_loss_epsilon = 1e-8
 
    
     for e in range(config["episodes"]):
@@ -65,7 +66,17 @@ def train(config):
         done = False
         
         new_game = deepcopy(game)
-        mytree = MCTSNode(new_game, False, 0, observation, 0, config["game_name"], env_factory=config["make_env"])
+        mytree = MCTSNode(
+            new_game,
+            False,
+            0,
+            observation,
+            0,
+            config["game_name"],
+            env_factory=config["make_env"],
+            policy_network=policy_network,
+            value_network=value_network
+        )
         
         print(f'Episode {e+1}/{config["episodes"]}')
         
@@ -80,7 +91,17 @@ def train(config):
             if mytree.done:
                 print(f"  Warning: MCTS tree marked as done prematurely. Resetting...")
                 new_game = deepcopy(game)
-                mytree = MCTSNode(new_game, False, 0, observation, 0, config["game_name"], env_factory=config["make_env"])
+                mytree = MCTSNode(
+                    new_game,
+                    False,
+                    0,
+                    observation,
+                    0,
+                    config["game_name"],
+                    env_factory=config["make_env"],
+                    policy_network=policy_network,
+                    value_network=value_network
+                )
         
             mytree, action, ob, p, p_ob = Policy_Player_MCTS(mytree)
             
@@ -149,11 +170,29 @@ def train(config):
             policy_network.train()
             optimizer_p.zero_grad()
             policy_preds = policy_network(inputs_tensor)
-            # Use CrossEntropyLoss with softmax output
-            loss_p = crossentropy_loss(policy_preds, targets_tensor)
+            loss_p = -(
+                targets_tensor * torch.log(policy_preds + policy_loss_epsilon)
+            ).sum(dim=1).mean()
             loss_p.backward()
             optimizer_p.step()
                             
             p_losses.append(loss_p.item())
+
+            avg_v_loss = np.mean(v_losses[-LOSS_AVG_WINDOW:])
+            avg_p_loss = np.mean(p_losses[-LOSS_AVG_WINDOW:])
+            print(
+                "NN update: "
+                f"value_loss={loss_v.item():.4f} "
+                f"(avg{LOSS_AVG_WINDOW}={avg_v_loss:.4f}), "
+                f"policy_loss={loss_p.item():.4f} "
+                f"(avg{LOSS_AVG_WINDOW}={avg_p_loss:.4f}), "
+                f"reward_avg100={moving_average[-1]:.2f}, "
+                f"buffer={len(replay_buffer)}/{BUFFER_SIZE}"
+            )
+        else:
+            print(
+                "NN update: waiting for replay buffer "
+                f"({len(replay_buffer)}/{BATCH_SIZE + 1} samples needed)"
+            )
 
     return rewards, moving_average, v_losses, p_losses

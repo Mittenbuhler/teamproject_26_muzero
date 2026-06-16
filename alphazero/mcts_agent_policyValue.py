@@ -410,7 +410,7 @@ class MCTSNode:
             raise ValueError("game has ended")
         
         if not self.child:
-            raise ValueError("no children found and game hasn\'t ended")
+            raise ValueError("no chxildren found and game hasn\'t ended")
         
         child = self.child
 
