@@ -1,4 +1,4 @@
-MCTS_POLICY_EXPLORE = 3
+MCTS_POLICY_EXPLORE = 10
 
 def Policy_Player_MCTS(mytree):  
     
@@ -15,9 +15,9 @@ def Policy_Player_MCTS(mytree):
     next_tree, next_action = mytree.next()
     
     # Extract the additional values from the tree nodes
-    obs = next_tree.observation  # Observation after taking the action
-    p_obs = mytree.observation   # Observation before taking the action
-    p = mytree.visit_count_policy(temperature=1.0)  # Policy distribution at current node
+    observation = next_tree.observation  # Observation after taking the action
+    prev_observation = mytree.observation   # Observation before taking the action
+    policy = mytree.visit_count_policy(temperature=1.0)  # Policy distribution at current node
         
     # note that here we are detaching the current node and returning the sub-tree 
     # that starts from the node rooted at the choosen action.
@@ -25,5 +25,5 @@ def Policy_Player_MCTS(mytree):
     # about the nodes, so we can reuse such statistics to make the search even more reliable!
     next_tree.detach_parent()
     
-    return next_tree, next_action, obs, p, p_obs
+    return next_tree, next_action, observation, policy, prev_observation
 

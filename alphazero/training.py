@@ -41,10 +41,10 @@ networks = AlphaZeroNetworks(
 )
 
 # Extract the networks
-value_network = networks.value_network
-policy_network = networks.policy_network
+value_network = networks.value_network   # estimates the total_reward from a given state
+policy_network = networks.policy_network # estimates the probability of actions from a given state
 
-# Create optimizers
+# Create optimizers (updates the weights of the networks based on the loss)
 optimizer_v = optim.Adam(value_network.parameters(), lr=0.001)
 optimizer_p = optim.Adam(policy_network.parameters(), lr=0.001)
 
@@ -82,9 +82,9 @@ for e in range(episodes):
     
     print(f'Episode {e+1}/{episodes}', flush=True)
     
-    obs = []
-    ps = []
-    p_obs = []
+    observations = []
+    policies = []
+    prev_observations = []
     
     step = 0
     
@@ -94,9 +94,9 @@ for e in range(episodes):
     
         mytree, action, ob, p, p_ob = Policy_Player_MCTS(mytree)
         
-        obs.append(ob)
-        ps.append(p)
-        p_obs.append(p_ob)      
+        observations.append(ob)
+        policies.append(p)
+        prev_observations.append(p_ob)      
             
         step_out = game.step(action)
         
@@ -112,8 +112,8 @@ for e in range(episodes):
         #game.render()
                 
         if done:
-            for i in range(len(obs)):
-                replay_buffer.add(obs[i], reward_e, p_obs[i], ps[i])
+            for i in range(len(observations)):
+                replay_buffer.add(observations[i], reward_e, prev_observations[i], policies[i])
             game.close()
             break
         
@@ -134,8 +134,8 @@ for e in range(episodes):
             
         # Each state has as target value the total rewards of the episode
             
-        inputs = np.array([experience.obs for experience in experiences])
-        targets = np.array([[experience.v / MAX_REWARD] for experience in experiences])
+        inputs = np.array([experience.observation for experience in experiences])
+        targets = np.array([[experience.value / MAX_REWARD] for experience in experiences])
         
         # Convert to PyTorch tensors
         inputs_tensor = torch.FloatTensor(inputs).to(device)
@@ -153,8 +153,8 @@ for e in range(episodes):
         
         # Each state has as target policy the policy according to visit counts
             
-        inputs = np.array([experience.p_obs for experience in experiences])
-        targets = np.array([experience.p for experience in experiences])
+        inputs = np.array([experience.prev_obs for experience in experiences])
+        targets = np.array([experience.policy for experience in experiences])
         
         # Convert to PyTorch tensors
         inputs_tensor = torch.FloatTensor(inputs).to(device)

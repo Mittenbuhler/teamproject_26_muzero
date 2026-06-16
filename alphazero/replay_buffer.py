@@ -17,21 +17,20 @@ class ReplayBuffer:
     def __init__(self, buffer_size, batch_size):
     
         """Initialize a ReplayBuffer object.
-        Params
-        ======
+        Params:
             buffer_size (int): maximum size of buffer
             batch_size (int): size of each training batch
         """
         
         self.memory = deque(maxlen=buffer_size)  
         self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["obs", "v", "p_obs", "p"])
+        self.experience = namedtuple("Experience", field_names=["observation", "value", "prev_obs", "policy"])
     
-    def add(self, obs, v, p_obs, p):
+    def add(self, observation, value, prev_obs, policy):
     
         """Add a new experience to memory."""
         
-        e = self.experience(obs, v, p_obs, p)
+        e = self.experience(observation, value, prev_obs, policy)
         self.memory.append(e)
     
     def sample(self):
