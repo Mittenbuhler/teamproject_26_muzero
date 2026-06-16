@@ -65,19 +65,22 @@ def train(config):
         done = False
         
         new_game = deepcopy(game)
-        mytree = MCTSNode(new_game, False, 0, observation, 0, config["game_name"])
+        mytree = MCTSNode(new_game, False, 0, observation, 0, config["game_name"], env_factory=config["make_env"])
         
         print(f'Episode {e+1}/{config["episodes"]}')
         
         observations = []
         policies = []
         prev_observations = []
-        
+        step_count = 0
         
         
         while not done:
             
-           
+            if mytree.done:
+                print(f"  Warning: MCTS tree marked as done prematurely. Resetting...")
+                new_game = deepcopy(game)
+                mytree = MCTSNode(new_game, False, 0, observation, 0, config["game_name"], env_factory=config["make_env"])
         
             mytree, action, ob, p, p_ob = Policy_Player_MCTS(mytree)
             
@@ -95,7 +98,7 @@ def train(config):
                 _, reward, done, _ = step_out
                 
             reward_e = reward_e + reward
-            
+            step_count += 1
         
                     
             if done:
@@ -104,7 +107,7 @@ def train(config):
                 game.close()
                 break
             
-        print(f'  Final reward: {reward_e}')
+        print(f'Steps: {step_count},  Final reward: {reward_e}')
         rewards.append(reward_e)
         moving_average.append(np.mean(rewards[-100:]))
         
