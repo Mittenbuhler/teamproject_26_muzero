@@ -1,3 +1,5 @@
+from platform import node
+
 import numpy as np
 import pytest
 
@@ -119,6 +121,9 @@ def test_selection_picks_child_with_highest_ucb_score(monkeypatch):
 
         monkeypatch.setattr(high_score_child, "rollout", chosen_rollout)
         monkeypatch.setattr(low_score_child, "rollout", wrong_rollout)
+
+        # Verhindere, dass das High-Score-Child Enkelkinder generiert
+        monkeypatch.setattr(high_score_child, "create_child", lambda: None)
 
         node.explore()
 
