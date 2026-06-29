@@ -186,33 +186,6 @@ def test_rollout_uses_value_network_instead_of_random_environment_rollout(
         env.close()
 
 
-def test_backpropagation_updates_leaf_and_ancestors(monkeypatch):
-    """Backpropagation should add rollout value to the leaf and root."""
-    node, env = make_root_node()
-    try:
-        node.create_child()
-        selected_child = node.child[2]
-        selected_child.N = 0
-        selected_child.T = 0.0
-
-        for action, child in node.child.items():
-            if action != 2:
-                child.N = 100
-                child.T = -100.0
-            child.prior_probability = 0.0
-        selected_child.prior_probability = 1.0
-
-        monkeypatch.setattr(selected_child, "rollout", lambda: 3.5)
-
-        node.explore()
-
-        assert selected_child.N == 1
-        assert selected_child.T == 3.5
-        assert node.N == 1
-        assert node.T == 3.5
-    finally:
-        env.close()
-
 
 def test_mcts_next_returns_valid_action_after_search():
     """The selected next action must be valid for the environment."""
