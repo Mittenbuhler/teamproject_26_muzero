@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 class DynamicsModel(nn.Module):
-    """Predicts the next latent state and immediate reward from latent + action."""
+    """Predicts the next latent state and reward from latent + action."""
 
     def __init__(self, state_dim, action_dim, hidden_dim=128):
         super().__init__()

@@ -52,47 +52,15 @@ class DynamicsReplayBuffer:
         return len(self.buffer)
 
 
-class PolicyValueReplayBuffer:
-    """Stores MCTS targets for policy/value training."""
-
-    def __init__(self, capacity=10000):
-        self.memory = deque(maxlen=capacity)
-        self.experience = namedtuple("Experience", ["state", "policy", "value"])
-
-    def add(self, state, policy, value):
-        self.memory.append(
-            self.experience(
-                np.asarray(state, dtype=np.float32),
-                np.asarray(policy, dtype=np.float32),
-                np.float32(value),
-            )
-        )
-
-    def sample(self, batch_size, device=None):
-        if batch_size > len(self.memory):
-            raise ValueError(f"Cannot sample {batch_size} from {len(self.memory)} targets")
-
-        batch = random.sample(self.memory, batch_size)
-        states = torch.as_tensor(np.asarray([e.state for e in batch]), dtype=torch.float32)
-        policies = torch.as_tensor(np.asarray([e.policy for e in batch]), dtype=torch.float32)
-        values = torch.as_tensor(np.asarray([[e.value] for e in batch]), dtype=torch.float32)
-
-        if device is not None:
-            states = states.to(device)
-            policies = policies.to(device)
-            values = values.to(device)
-
-        return states, policies, values
-
-    def __len__(self):
-        return len(self.memory)
-
-
 class LatentReplayBuffer:
-    """Stores image transitions and MuZero-style learning targets."""
+    """Stores complete episodes and samples contiguous MuZero unrolls."""
 
     def __init__(self, capacity=20000):
-        self.memory = deque(maxlen=capacity)
+        self.capacity = int(capacity)
+        if self.capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self.episodes = deque()
+        self.size = 0
         self.experience = namedtuple(
             "LatentExperience",
             [
@@ -102,56 +70,92 @@ class LatentReplayBuffer:
                 "policy",
                 "value",
                 "reward",
+                "terminated",
             ],
         )
 
-    def add(self, observation, action, next_observation, policy, value, reward):
-        self.memory.append(
+    def add_episode(self, transitions):
+        episode = tuple(
             self.experience(
-                np.asarray(observation, dtype=np.float32),
-                int(action),
-                np.asarray(next_observation, dtype=np.float32),
-                np.asarray(policy, dtype=np.float32),
-                np.float32(value),
-                np.float32(reward),
+                np.asarray(transition["observation"], dtype=np.float32),
+                int(transition["action"]),
+                np.asarray(transition["next_observation"], dtype=np.float32),
+                np.asarray(transition["policy"], dtype=np.float32),
+                np.float32(transition["value"]),
+                np.float32(transition["reward"]),
+                np.float32(transition.get("terminated", False)),
             )
+            for transition in transitions
         )
+        if not episode:
+            return
+        if len(episode) > self.capacity:
+            episode = episode[-self.capacity:]
 
-    def sample(self, batch_size, action_dim, device=None):
-        if batch_size > len(self.memory):
-            raise ValueError(f"Cannot sample {batch_size} from {len(self.memory)} targets")
+        self.episodes.append(episode)
+        self.size += len(episode)
+        while self.size > self.capacity and len(self.episodes) > 1:
+            self.size -= len(self.episodes.popleft())
 
-        batch = random.sample(self.memory, batch_size)
-        observations = torch.as_tensor(
-            np.asarray([e.observation for e in batch]), dtype=torch.float32
+    def sample(self, batch_size, unroll_steps, action_dim, device=None):
+        if unroll_steps <= 0:
+            raise ValueError("unroll_steps must be positive")
+        if batch_size > self.size:
+            raise ValueError(f"Cannot sample {batch_size} from {self.size} targets")
+
+        episodes = list(self.episodes)
+        sampled_episodes = random.choices(
+            episodes,
+            weights=[len(episode) for episode in episodes],
+            k=batch_size,
         )
-        next_observations = torch.as_tensor(
-            np.asarray([e.next_observation for e in batch]), dtype=torch.float32
-        )
-        actions = torch.zeros((batch_size, action_dim), dtype=torch.float32)
-        actions[
-            torch.arange(batch_size),
-            torch.as_tensor([e.action for e in batch], dtype=torch.long),
-        ] = 1.0
-        policies = torch.as_tensor(
-            np.asarray([e.policy for e in batch]), dtype=torch.float32
-        )
-        values = torch.as_tensor(
-            np.asarray([[e.value] for e in batch]), dtype=torch.float32
-        )
-        rewards = torch.as_tensor(
-            np.asarray([[e.reward] for e in batch]), dtype=torch.float32
-        )
+        starts = [random.randrange(len(episode)) for episode in sampled_episodes]
+
+        observations = []
+        next_observations = []
+        actions = np.zeros((batch_size, unroll_steps, action_dim), dtype=np.float32)
+        policies = np.zeros((batch_size, unroll_steps, action_dim), dtype=np.float32)
+        values = np.zeros((batch_size, unroll_steps, 1), dtype=np.float32)
+        rewards = np.zeros((batch_size, unroll_steps, 1), dtype=np.float32)
+        terminals = np.zeros((batch_size, unroll_steps, 1), dtype=np.float32)
+        masks = np.zeros((batch_size, unroll_steps, 1), dtype=np.float32)
+
+        for batch_index, (episode, start) in enumerate(zip(sampled_episodes, starts)):
+            observations.append(episode[start].observation)
+            padded_next_observation = np.zeros_like(episode[start].next_observation)
+            episode_next_observations = []
+            for step in range(unroll_steps):
+                index = start + step
+                if index < len(episode):
+                    experience = episode[index]
+                    padded_next_observation = experience.next_observation
+                    actions[batch_index, step, experience.action] = 1.0
+                    policies[batch_index, step] = experience.policy
+                    values[batch_index, step, 0] = experience.value
+                    rewards[batch_index, step, 0] = experience.reward
+                    terminals[batch_index, step, 0] = experience.terminated
+                    masks[batch_index, step, 0] = 1.0
+                episode_next_observations.append(padded_next_observation)
+            next_observations.append(episode_next_observations)
+
+        tensors = [
+            torch.as_tensor(array, dtype=torch.float32)
+            for array in (
+                np.asarray(observations),
+                np.asarray(actions),
+                np.asarray(next_observations),
+                np.asarray(policies),
+                np.asarray(values),
+                np.asarray(rewards),
+                np.asarray(terminals),
+                np.asarray(masks),
+            )
+        ]
 
         if device is not None:
-            observations = observations.to(device)
-            actions = actions.to(device)
-            next_observations = next_observations.to(device)
-            policies = policies.to(device)
-            values = values.to(device)
-            rewards = rewards.to(device)
+            tensors = [tensor.to(device) for tensor in tensors]
 
-        return observations, actions, next_observations, policies, values, rewards
+        return tuple(tensors)
 
     def __len__(self):
-        return len(self.memory)
+        return self.size

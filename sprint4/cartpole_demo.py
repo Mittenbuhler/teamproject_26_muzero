@@ -14,7 +14,6 @@ from train_policy_value import (
     load_latent_checkpoint,
     make_latent_mcts,
     parse_simulations,
-    save_latent_checkpoint,
     save_loss_plot,
     save_training_progress_plot,
     train_latent_muzero,
@@ -183,6 +182,7 @@ def train_from_args(args, checkpoint_path, device):
         value_target_mode=args.value_target_mode,
         terminal_penalty=args.terminal_penalty,
         consistency_weight=args.consistency_weight,
+        unroll_steps=args.unroll_steps,
         save_best_checkpoint=args.save_best_checkpoint,
         checkpoint_path=checkpoint_path,
         checkpoint_eval_interval=args.checkpoint_eval_interval,
@@ -194,46 +194,13 @@ def train_from_args(args, checkpoint_path, device):
         seed=args.seed,
         device=device,
     )
-    representation, dynamics, policy, value, history = networks
-    if args.save_best_checkpoint:
-        representation, dynamics, policy, value, checkpoint = load_latent_checkpoint(
-            checkpoint_path,
-            device=device,
-        )
-        print("using best latent checkpoint:", checkpoint_path)
-    else:
-        save_latent_checkpoint(
-            checkpoint_path,
-            representation,
-            dynamics,
-            policy,
-            value,
-            history,
-            value_discount=args.value_discount,
-            max_steps=args.max_steps,
-            terminal_penalty=args.terminal_penalty,
-            value_target_mode=args.value_target_mode,
-            minimum_temperature=args.minimum_temperature,
-            temperature_hold=args.temperature_hold,
-            temperature_unlock_reward_threshold=(
-                args.temperature_unlock_reward_threshold
-            ),
-        )
-        checkpoint = {
-            "image_size": 32,
-            "stack_size": 5,
-            "value_discount": args.value_discount,
-            "max_steps": args.max_steps,
-            "terminal_penalty": args.terminal_penalty,
-            "value_target_mode": args.value_target_mode,
-            "minimum_temperature": args.minimum_temperature,
-            "temperature_hold": args.temperature_hold,
-            "temperature_unlock_reward_threshold": (
-                args.temperature_unlock_reward_threshold
-            ),
-            "history": history,
-        }
-        print("saved final latent checkpoint:", checkpoint_path)
+    *_, history = networks
+    representation, dynamics, policy, value, checkpoint = load_latent_checkpoint(
+        checkpoint_path,
+        device=device,
+    )
+    checkpoint_kind = "best" if args.save_best_checkpoint else "final"
+    print(f"using {checkpoint_kind} latent checkpoint:", checkpoint_path)
 
     save_loss_plot(history, Path(args.artifact_dir) / "latent_muzero_loss.png")
     save_training_progress_plot(
@@ -250,7 +217,11 @@ def run(args):
     ensure_dir(args.artifact_dir)
     ensure_dir(args.checkpoint_dir)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint_path = Path(args.checkpoint_dir) / "latent_muzero_cartpole.pt"
+    checkpoint_path = (
+        Path(args.checkpoint_path)
+        if args.checkpoint_path
+        else Path(args.checkpoint_dir) / "latent_muzero_cartpole.pt"
+    )
 
     networks = None
     if checkpoint_path.exists() and not args.train:
@@ -320,6 +291,10 @@ def parse_args():
     parser.add_argument("--env", default="CartPole-v1")
     parser.add_argument("--artifact-dir", default="artifacts")
     parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument(
+        "--checkpoint-path",
+        help="Exact latent checkpoint to load or train; overrides --checkpoint-dir.",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--episodes", type=int, default=300)
@@ -328,7 +303,7 @@ def parse_args():
     parser.add_argument("--updates-per-episode", type=int, default=10)
     parser.add_argument("--buffer-capacity", type=int, default=20000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--warmup-episodes", type=int, default=10)
+    parser.add_argument("--warmup-episodes", type=int, default=20)
     parser.add_argument("--exploration-episodes", type=int, default=180)
     parser.add_argument("--minimum-temperature", type=float, default=0.25)
     parser.add_argument("--temperature-hold", type=float, default=0.5)
@@ -344,8 +319,9 @@ def parse_args():
         choices=("full-episode", "n-step"),
         default="full-episode",
     )
-    parser.add_argument("--terminal-penalty", type=float, default=-10.0)
+    parser.add_argument("--terminal-penalty", type=float, default=-25.0)
     parser.add_argument("--consistency-weight", type=float, default=0.25)
+    parser.add_argument("--unroll-steps", type=int, default=5)
     parser.add_argument(
         "--simulations",
         type=parse_simulations,

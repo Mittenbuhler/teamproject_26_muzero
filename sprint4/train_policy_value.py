@@ -17,7 +17,8 @@ from models import DynamicsModel, ImageRepresentationNetwork, PolicyNetwork, Val
 from utils import ensure_dir
 
 
-LATENT_TRAINING_VERSION = 6
+LATENT_TRAINING_VERSION = 10
+COMPATIBLE_LATENT_TRAINING_VERSIONS = {8, 9, LATENT_TRAINING_VERSION}
 
 
 def parse_simulations(value):
@@ -46,8 +47,8 @@ def parse_simulations(value):
 
 
 def latent_terminal(_latent):
-    # Imagined latent states have no explicit terminal head. Real Gym episodes
-    # still terminate normally and cap every training trajectory.
+    # A latent state has no reliable analytic terminal test. The planned
+    # vector-state pipeline supplies CartPole's real state boundary instead.
     return False
 
 
@@ -132,6 +133,7 @@ def train_latent_step(
     buffer,
     optimizer,
     batch_size,
+    unroll_steps,
     action_dim,
     consistency_weight,
     device,
@@ -143,26 +145,77 @@ def train_latent_step(
         target_policies,
         target_values,
         target_rewards,
-    ) = buffer.sample(batch_size, action_dim=action_dim, device=device)
+        _target_terminals,
+        masks,
+    ) = buffer.sample(
+        batch_size,
+        unroll_steps=unroll_steps,
+        action_dim=action_dim,
+        device=device,
+    )
 
     optimizer.zero_grad()
     latents = representation_network(observations)
-    policy_predictions = policy_network(latents)
-    value_predictions = value_network(latents)
-    predicted_next_latents, predicted_rewards = dynamics_model(latents, actions)
-
     with torch.no_grad():
-        target_next_latents = representation_network(next_observations)
+        flat_next_observations = next_observations.flatten(0, 1)
+        target_next_latents = representation_network(flat_next_observations).view(
+            batch_size,
+            unroll_steps,
+            -1,
+        )
 
-    policy_loss = -(
-        target_policies * torch.log(policy_predictions + 1e-8)
-    ).sum(dim=1).mean()
-    value_loss = F.mse_loss(value_predictions, target_values)
-    reward_loss = F.mse_loss(predicted_rewards, target_rewards)
-    consistency_loss = F.smooth_l1_loss(
-        predicted_next_latents,
-        target_next_latents,
-    )
+    policy_loss = torch.zeros((), device=device)
+    value_loss = torch.zeros((), device=device)
+    reward_loss = torch.zeros((), device=device)
+    consistency_loss = torch.zeros((), device=device)
+    valid_steps = masks.sum().clamp_min(1.0)
+
+    for step in range(unroll_steps):
+        mask = masks[:, step]
+        policy_predictions = policy_network(latents)
+        value_predictions = value_network(latents)
+        predicted_next_latents, predicted_rewards = dynamics_model(
+            latents,
+            actions[:, step],
+        )
+
+        policy_loss += (
+            -(
+                target_policies[:, step]
+                * torch.log(policy_predictions + 1e-8)
+            ).sum(dim=1, keepdim=True)
+            * mask
+        ).sum()
+        value_loss += (
+            F.mse_loss(
+                value_predictions,
+                target_values[:, step],
+                reduction="none",
+            )
+            * mask
+        ).sum()
+        reward_loss += (
+            F.mse_loss(
+                predicted_rewards,
+                target_rewards[:, step],
+                reduction="none",
+            )
+            * mask
+        ).sum()
+        consistency_loss += (
+            F.smooth_l1_loss(
+                predicted_next_latents,
+                target_next_latents[:, step],
+                reduction="none",
+            ).mean(dim=1, keepdim=True)
+            * mask
+        ).sum()
+        latents = predicted_next_latents
+
+    policy_loss /= valid_steps
+    value_loss /= valid_steps
+    reward_loss /= valid_steps
+    consistency_loss /= valid_steps
     total_loss = (
         policy_loss
         + value_loss
@@ -206,7 +259,10 @@ def bootstrapped_value_targets(
         for index in range(start, stop):
             value += (
                 discount_power
-                * trajectory[index]["reward"]
+                * trajectory[index].get(
+                    "value_reward",
+                    trajectory[index]["reward"],
+                )
                 / return_scale
             )
             discount_power *= discount
@@ -225,7 +281,10 @@ def full_episode_value_targets(trajectory, discount, max_steps):
 
     for index in range(len(trajectory) - 1, -1, -1):
         discounted_return = (
-            trajectory[index]["reward"] / return_scale
+            trajectory[index].get(
+                "value_reward",
+                trajectory[index]["reward"],
+            ) / return_scale
             + discount * discounted_return
         )
         targets[index] = float(np.clip(discounted_return, -1.0, 1.0))
@@ -294,7 +353,7 @@ def train_latent_muzero(
     buffer_capacity=20000,
     hidden_dim=128,
     learning_rate=3e-4,
-    warmup_episodes=10,
+    warmup_episodes=20,
     exploration_episodes=180,
     minimum_temperature=0.25,
     temperature_hold=0.5,
@@ -302,10 +361,11 @@ def train_latent_muzero(
     value_discount=0.997,
     bootstrap_steps=10,
     value_target_mode="full-episode",
-    terminal_penalty=-10.0,
+    terminal_penalty=-25.0,
     image_size=32,
     stack_size=5,
     latent_dim=32,
+    unroll_steps=5,
     consistency_weight=0.25,
     save_best_checkpoint=True,
     checkpoint_path="checkpoints/latent_muzero_cartpole.pt",
@@ -313,6 +373,7 @@ def train_latent_muzero(
     checkpoint_eval_episodes=20,
     simulation_upgrade_reward_threshold=20.0,
     simulation_upgrade_window=20,
+    resume_path=None,
     seed=0,
     device=None,
 ):
@@ -322,6 +383,10 @@ def train_latent_muzero(
         raise ValueError("The configured representation architecture requires 32x32 images.")
     if stack_size != 5:
         raise ValueError("The configured representation architecture requires five frames.")
+    if unroll_steps <= 0:
+        raise ValueError("unroll_steps must be positive.")
+    if episodes <= 0:
+        raise ValueError("episodes must be positive.")
     if value_target_mode not in {"full-episode", "n-step"}:
         raise ValueError("value_target_mode must be 'full-episode' or 'n-step'.")
     if not 0.0 <= minimum_temperature <= temperature_hold <= 1.0:
@@ -335,24 +400,42 @@ def train_latent_muzero(
     env.action_space.seed(seed)
     action_dim = env.action_space.n
 
-    representation_network = ImageRepresentationNetwork(
-        input_channels=stack_size,
-        latent_dim=latent_dim,
-    ).to(device)
-    dynamics_model = DynamicsModel(
-        latent_dim,
-        action_dim,
-        hidden_dim=hidden_dim,
-    ).to(device)
-    policy_network = PolicyNetwork(
-        latent_dim,
-        action_dim,
-        hidden_dim=hidden_dim,
-    ).to(device)
-    value_network = ValueNetwork(
-        latent_dim,
-        hidden_dim=hidden_dim,
-    ).to(device)
+    resume_checkpoint = None
+    if resume_path is not None:
+        if not Path(resume_path).exists():
+            raise FileNotFoundError(f"Cannot resume missing checkpoint: {resume_path}")
+        (
+            representation_network,
+            dynamics_model,
+            policy_network,
+            value_network,
+            resume_checkpoint,
+        ) = load_latent_checkpoint(resume_path, device=device)
+        if resume_checkpoint["image_size"] != image_size:
+            raise ValueError("Resume checkpoint uses a different image size.")
+        if resume_checkpoint["stack_size"] != stack_size:
+            raise ValueError("Resume checkpoint uses a different frame-stack size.")
+        if resume_checkpoint["action_dim"] != action_dim:
+            raise ValueError("Resume checkpoint uses a different action space.")
+    else:
+        representation_network = ImageRepresentationNetwork(
+            input_channels=stack_size,
+            latent_dim=latent_dim,
+        ).to(device)
+        dynamics_model = DynamicsModel(
+            latent_dim,
+            action_dim,
+            hidden_dim=hidden_dim,
+        ).to(device)
+        policy_network = PolicyNetwork(
+            latent_dim,
+            action_dim,
+            hidden_dim=hidden_dim,
+        ).to(device)
+        value_network = ValueNetwork(
+            latent_dim,
+            hidden_dim=hidden_dim,
+        ).to(device)
 
     optimizer = torch.optim.Adam(
         [
@@ -363,19 +446,21 @@ def train_latent_muzero(
         ],
         lr=learning_rate,
     )
+    if (
+        resume_checkpoint is not None
+        and resume_checkpoint.get("training_version") == LATENT_TRAINING_VERSION
+        and resume_checkpoint.get("optimizer_state_dict")
+    ):
+        optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+        for parameter_group in optimizer.param_groups:
+            parameter_group["lr"] = learning_rate
+        print("restored Adam optimizer state")
+    elif resume_checkpoint is not None:
+        print("older checkpoint uses a different optimizer state; continuing fresh")
+
     buffer = LatentReplayBuffer(buffer_capacity)
     current_simulations = initial_simulations
-    mcts = make_latent_mcts(
-        dynamics_model,
-        policy_network,
-        value_network,
-        action_dim,
-        current_simulations,
-        value_discount,
-        max_steps,
-    )
-
-    history = {
+    fresh_history = {
         "rewards": [],
         "temperatures": [],
         "total_losses": [],
@@ -386,15 +471,61 @@ def train_latent_muzero(
         "evaluations": [],
         "terminated_episodes": [],
         "temperature_unlocks": [],
+        "resume_events": [],
         "simulation_history": [
             {"episode": 1, "simulations": current_simulations, "reason": "initial"}
         ],
     }
-    best_evaluation_reward = float("-inf")
-    temperature_unlock_episode = None
-    temperature_at_unlock = None
+    if resume_checkpoint is None:
+        history = fresh_history
+    else:
+        history = resume_checkpoint.get("history", {})
+        for key, default in fresh_history.items():
+            history.setdefault(key, default)
+        if history["simulation_history"]:
+            saved_simulations = history["simulation_history"][-1]["simulations"]
+            current_simulations = min(target_simulations, saved_simulations)
 
-    for episode in range(episodes):
+    start_episode = len(history["rewards"])
+    final_episode = start_episode + episodes
+    if resume_checkpoint is not None:
+        history["resume_events"].append(
+            {
+                "episode": start_episode,
+                "update": len(history["total_losses"]),
+                "checkpoint": str(Path(resume_path)),
+                "previous_terminal_penalty": resume_checkpoint.get(
+                    "terminal_penalty"
+                ),
+                "terminal_penalty": terminal_penalty,
+            }
+        )
+    best_evaluation_reward = history.get("best_evaluation_reward", float("-inf"))
+    if history["temperature_unlocks"]:
+        latest_unlock = history["temperature_unlocks"][-1]
+        temperature_unlock_episode = latest_unlock["episode"]
+        temperature_at_unlock = latest_unlock["temperature"]
+    else:
+        temperature_unlock_episode = None
+        temperature_at_unlock = None
+
+    mcts = make_latent_mcts(
+        dynamics_model,
+        policy_network,
+        value_network,
+        action_dim,
+        current_simulations,
+        value_discount,
+        max_steps,
+    )
+    if resume_checkpoint is not None:
+        print(
+            f"resuming checkpoint at episode {start_episode}; "
+            f"training {episodes} additional episodes with "
+            f"terminal_penalty={terminal_penalty:g}"
+        )
+
+    for episode in range(start_episode, final_episode):
         observation, _ = env.reset(seed=seed + episode)
         frame_stack = make_frame_stack(stack_size, image_size)
         stacked_observation = frame_stack.reset(observation)
@@ -413,7 +544,7 @@ def train_latent_muzero(
         )
 
         while not done and steps < max_steps:
-            if episode < warmup_episodes:
+            if resume_checkpoint is None and episode < warmup_episodes:
                 action = env.action_space.sample()
                 policy_target = np.ones(action_dim, dtype=np.float32) / action_dim
                 search_value = 0.0
@@ -425,7 +556,7 @@ def train_latent_muzero(
                 search_value = root.mean_value
 
             next_observation, reward, terminated, truncated, _ = env.step(action)
-            learning_reward = shaped_environment_reward(
+            value_reward = shaped_environment_reward(
                 reward,
                 terminated=terminated,
                 terminal_penalty=terminal_penalty,
@@ -438,7 +569,9 @@ def train_latent_muzero(
                     "next_observation": next_stacked_observation.copy(),
                     "policy": np.asarray(policy_target, dtype=np.float32),
                     "search_value": float(search_value),
-                    "reward": learning_reward,
+                    "reward": float(reward),
+                    "value_reward": value_reward,
+                    "terminated": bool(terminated),
                 }
             )
             stacked_observation = next_stacked_observation
@@ -461,14 +594,8 @@ def train_latent_muzero(
                 max_steps=max_steps,
             )
         for transition, value_target in zip(trajectory, value_targets):
-            buffer.add(
-                transition["observation"],
-                transition["action"],
-                transition["next_observation"],
-                transition["policy"],
-                value_target,
-                transition["reward"],
-            )
+            transition["value"] = value_target
+        buffer.add_episode(trajectory)
 
         history["rewards"].append(total_reward)
         history["temperatures"].append(temperature)
@@ -484,6 +611,7 @@ def train_latent_muzero(
                     buffer,
                     optimizer,
                     batch_size,
+                    unroll_steps,
                     action_dim,
                     consistency_weight,
                     device,
@@ -497,7 +625,7 @@ def train_latent_muzero(
         recent = float(np.mean(history["rewards"][-10:]))
         print(
             "latent MuZero "
-            f"episode={episode + 1:4d}/{episodes} "
+            f"episode={episode + 1:4d}/{final_episode} "
             f"reward={total_reward:6.1f} "
             f"avg10={recent:6.1f} "
             f"temp={temperature:.2f} "
@@ -527,7 +655,7 @@ def train_latent_muzero(
             save_best_checkpoint or temperature_unlock_episode is None
         ) and (
             (episode + 1) % checkpoint_eval_interval == 0
-            or episode + 1 == episodes
+            or episode + 1 == final_episode
         )
         if should_evaluate:
             evaluation_seeds = [
@@ -599,16 +727,44 @@ def train_latent_muzero(
                     max_steps=max_steps,
                     terminal_penalty=terminal_penalty,
                     value_target_mode=value_target_mode,
+                    unroll_steps=unroll_steps,
                     minimum_temperature=minimum_temperature,
                     temperature_hold=temperature_hold,
                     temperature_unlock_reward_threshold=(
                         temperature_unlock_reward_threshold
                     ),
+                    optimizer_state_dict=optimizer.state_dict(),
+                    consistency_weight=consistency_weight,
                 )
                 print(
                     f"saved best latent checkpoint: {checkpoint_path} "
                     f"| mean_reward={mean_reward:.1f}"
                 )
+
+    if not save_best_checkpoint:
+        save_latent_checkpoint(
+            checkpoint_path,
+            representation_network,
+            dynamics_model,
+            policy_network,
+            value_network,
+            history,
+            image_size=image_size,
+            stack_size=stack_size,
+            value_discount=value_discount,
+            max_steps=max_steps,
+            terminal_penalty=terminal_penalty,
+            value_target_mode=value_target_mode,
+            unroll_steps=unroll_steps,
+            minimum_temperature=minimum_temperature,
+            temperature_hold=temperature_hold,
+            temperature_unlock_reward_threshold=(
+                temperature_unlock_reward_threshold
+            ),
+            optimizer_state_dict=optimizer.state_dict(),
+            consistency_weight=consistency_weight,
+        )
+        print("saved final latent checkpoint:", checkpoint_path)
 
     env.close()
     return (
@@ -631,11 +787,14 @@ def save_latent_checkpoint(
     stack_size=5,
     value_discount=0.997,
     max_steps=500,
-    terminal_penalty=-10.0,
+    terminal_penalty=-25.0,
     value_target_mode="full-episode",
+    unroll_steps=5,
     minimum_temperature=0.25,
     temperature_hold=0.5,
     temperature_unlock_reward_threshold=20.0,
+    optimizer_state_dict=None,
+    consistency_weight=0.25,
 ):
     ensure_dir(Path(path).parent)
     torch.save(
@@ -654,12 +813,15 @@ def save_latent_checkpoint(
             "max_steps": max_steps,
             "terminal_penalty": terminal_penalty,
             "value_target_mode": value_target_mode,
+            "unroll_steps": unroll_steps,
             "minimum_temperature": minimum_temperature,
             "temperature_hold": temperature_hold,
             "temperature_unlock_reward_threshold": (
                 temperature_unlock_reward_threshold
             ),
+            "consistency_weight": consistency_weight,
             "history": history,
+            "optimizer_state_dict": optimizer_state_dict,
         },
         path,
     )
@@ -669,9 +831,10 @@ def load_latent_checkpoint(path, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(path, map_location=device, weights_only=False)
-    if checkpoint.get("training_version") != LATENT_TRAINING_VERSION:
+    checkpoint_version = checkpoint.get("training_version")
+    if checkpoint_version not in COMPATIBLE_LATENT_TRAINING_VERSIONS:
         raise ValueError(
-            "Checkpoint is not compatible with the five-frame latent MuZero pipeline."
+            "Checkpoint is not compatible with the recurrent latent MuZero pipeline."
         )
 
     representation_network = ImageRepresentationNetwork(
@@ -694,7 +857,12 @@ def load_latent_checkpoint(path, device=None):
     ).to(device)
 
     representation_network.load_state_dict(checkpoint["representation_state_dict"])
-    dynamics_model.load_state_dict(checkpoint["dynamics_state_dict"])
+    dynamics_state_dict = {
+        key: value
+        for key, value in checkpoint["dynamics_state_dict"].items()
+        if not key.startswith("terminal_head.")
+    }
+    dynamics_model.load_state_dict(dynamics_state_dict)
     policy_network.load_state_dict(checkpoint["policy_state_dict"])
     value_network.load_state_dict(checkpoint["value_state_dict"])
     for network in (
@@ -726,15 +894,23 @@ def save_loss_plot(history, output_path):
         print("no latent losses recorded, skipping loss plot")
         return
 
-    plt.figure(figsize=(10, 5))
+    _, ax = plt.subplots(figsize=(10, 5))
     for name, values in losses.items():
         if values:
-            plt.plot(values, label=name)
-    plt.xlabel("network update")
-    plt.ylabel("loss")
-    plt.title("Latent MuZero Training Loss")
-    plt.grid(alpha=0.25)
-    plt.legend()
+            ax.plot(values, label=name)
+    for index, event in enumerate(history.get("resume_events", [])):
+        ax.axvline(
+            event["update"],
+            color="black",
+            linestyle="--",
+            alpha=0.7,
+            label="resumed checkpoint" if index == 0 else None,
+        )
+    ax.set_xlabel("network update")
+    ax.set_ylabel("loss")
+    ax.set_title("Latent MuZero Training Loss")
+    ax.grid(alpha=0.25)
+    ax.legend()
     plt.tight_layout()
     plt.savefig(output_path, dpi=140)
     plt.close()
@@ -747,6 +923,7 @@ def save_training_progress_plot(history, output_path):
     rewards = np.asarray(history.get("rewards", []), dtype=np.float32)
     evaluations = history.get("evaluations", [])
     total_losses = history.get("total_losses", [])
+    resume_events = history.get("resume_events", [])
     fig, (reward_ax, loss_ax) = plt.subplots(2, 1, figsize=(10, 8))
 
     if rewards.size:
@@ -773,6 +950,31 @@ def save_training_progress_plot(history, output_path):
             capsize=3,
             label="checkpoint evaluation mean +/- std",
         )
+        running_best = float("-inf")
+        best_evaluations = []
+        for evaluation in evaluations:
+            if evaluation["mean_reward"] > running_best:
+                running_best = evaluation["mean_reward"]
+                best_evaluations.append(evaluation)
+        reward_ax.scatter(
+            [item["episode"] for item in best_evaluations],
+            [item["mean_reward"] for item in best_evaluations],
+            marker="*",
+            s=110,
+            color="gold",
+            edgecolor="black",
+            linewidth=0.5,
+            zorder=4,
+            label="saved best checkpoint",
+        )
+    for index, event in enumerate(resume_events):
+        reward_ax.axvline(
+            event["episode"],
+            color="black",
+            linestyle="--",
+            alpha=0.7,
+            label="resumed checkpoint" if index == 0 else None,
+        )
     reward_ax.set_title("Latent MuZero Reward")
     reward_ax.set_xlabel("episode")
     reward_ax.set_ylabel("reward")
@@ -781,6 +983,15 @@ def save_training_progress_plot(history, output_path):
 
     if total_losses:
         loss_ax.plot(total_losses, label="total loss")
+    for index, event in enumerate(resume_events):
+        loss_ax.axvline(
+            event["update"],
+            color="black",
+            linestyle="--",
+            alpha=0.7,
+            label="resumed checkpoint" if index == 0 else None,
+        )
+    if total_losses or resume_events:
         loss_ax.legend()
     loss_ax.set_title("Joint Network Loss")
     loss_ax.set_xlabel("network update")
@@ -816,7 +1027,7 @@ def parse_args():
     parser.add_argument("--buffer-capacity", type=int, default=20000)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--warmup-episodes", type=int, default=10)
+    parser.add_argument("--warmup-episodes", type=int, default=20)
     parser.add_argument("--exploration-episodes", type=int, default=180)
     parser.add_argument("--minimum-temperature", type=float, default=0.25)
     parser.add_argument("--temperature-hold", type=float, default=0.5)
@@ -832,8 +1043,9 @@ def parse_args():
         choices=("full-episode", "n-step"),
         default="full-episode",
     )
-    parser.add_argument("--terminal-penalty", type=float, default=-10.0)
+    parser.add_argument("--terminal-penalty", type=float, default=-25.0)
     parser.add_argument("--consistency-weight", type=float, default=0.25)
+    parser.add_argument("--unroll-steps", type=int, default=5)
     parser.add_argument("--save-best-checkpoint", action="store_true")
     parser.add_argument("--checkpoint-eval-interval", type=int, default=20)
     parser.add_argument("--checkpoint-eval-episodes", type=int, default=20)
@@ -844,6 +1056,11 @@ def parse_args():
     )
     parser.add_argument("--simulation-upgrade-window", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue from --save-path; --episodes counts additional episodes.",
+    )
     return parser.parse_args()
 
 
@@ -875,6 +1092,7 @@ def main():
         value_target_mode=args.value_target_mode,
         terminal_penalty=args.terminal_penalty,
         consistency_weight=args.consistency_weight,
+        unroll_steps=args.unroll_steps,
         save_best_checkpoint=args.save_best_checkpoint,
         checkpoint_path=args.save_path,
         checkpoint_eval_interval=args.checkpoint_eval_interval,
@@ -883,30 +1101,12 @@ def main():
             args.simulation_upgrade_reward_threshold
         ),
         simulation_upgrade_window=args.simulation_upgrade_window,
+        resume_path=args.save_path if args.resume else None,
         seed=args.seed,
         device=device,
     )
-    representation, dynamics, policy, value, history = networks
-    if not args.save_best_checkpoint:
-        save_latent_checkpoint(
-            args.save_path,
-            representation,
-            dynamics,
-            policy,
-            value,
-            history,
-            value_discount=args.value_discount,
-            max_steps=args.max_steps,
-            terminal_penalty=args.terminal_penalty,
-            value_target_mode=args.value_target_mode,
-            minimum_temperature=args.minimum_temperature,
-            temperature_hold=args.temperature_hold,
-            temperature_unlock_reward_threshold=(
-                args.temperature_unlock_reward_threshold
-            ),
-        )
-        print("saved final latent checkpoint:", args.save_path)
-    else:
+    _, _, _, _, history = networks
+    if args.save_best_checkpoint:
         print("kept best latent checkpoint:", args.save_path)
     save_loss_plot(history, args.loss_plot_path)
     save_training_progress_plot(history, args.training_plot_path)

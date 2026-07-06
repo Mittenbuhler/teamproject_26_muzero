@@ -122,9 +122,12 @@ class ModelBasedMCTS:
 
         priors = self.policy_network.action_probs(node.state)
         for action in range(self.action_dim):
-            next_state, reward = self.dynamics_model.predict(node.state, action)
-            reward *= self.reward_scale
+            next_state, reward = self.dynamics_model.predict(
+                node.state,
+                action,
+            )
             done = self.terminal_fn(next_state)
+            reward *= self.reward_scale
             child = MCTSNode(
                 next_state,
                 parent=node,

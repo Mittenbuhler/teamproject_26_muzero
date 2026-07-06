@@ -100,7 +100,16 @@ def load_dynamics(path, device=None):
         checkpoint["action_dim"],
         checkpoint["hidden_dim"],
     ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    state_dict = {
+        key: value
+        for key, value in checkpoint["model_state_dict"].items()
+        if not key.startswith("terminal_head.")
+    }
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    if incompatible.missing_keys:
+        raise ValueError("Dynamics checkpoint has an incompatible architecture.")
+    if incompatible.unexpected_keys:
+        raise ValueError("Dynamics checkpoint has unexpected parameters.")
     model.eval()
     return model
 
