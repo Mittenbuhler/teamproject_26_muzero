@@ -141,11 +141,35 @@ class LatentPipelineTest(unittest.TestCase):
             terminal_fn=latent_terminal,
             simulations=2,
             reward_scale=1 / 500,
+            max_depth=3,
         )
         root = mcts.search(np.zeros(32, dtype=np.float32))
         self.assertEqual(set(root.children), {0, 1})
         self.assertEqual(root.children[0].state.shape, (32,))
         self.assertEqual(root.visit_count, 2)
+
+    def test_latent_mcts_respects_search_depth(self):
+        dynamics = DynamicsModel(32, 2, hidden_dim=16)
+        policy = PolicyNetwork(32, 2, hidden_dim=16)
+        value = ValueNetwork(32, hidden_dim=16)
+        mcts = ModelBasedMCTS(
+            dynamics,
+            policy,
+            value,
+            action_dim=2,
+            terminal_fn=latent_terminal,
+            simulations=20,
+            reward_scale=1 / 500,
+            max_depth=2,
+        )
+        root = mcts.search(np.zeros(32, dtype=np.float32))
+        frontier = [root]
+        max_depth = 0
+        while frontier:
+            node = frontier.pop()
+            max_depth = max(max_depth, node.depth)
+            frontier.extend(node.children.values())
+        self.assertLessEqual(max_depth, 2)
 
     def test_bootstrapped_target_uses_real_rewards_and_future_search_value(self):
         trajectory = [
@@ -223,6 +247,8 @@ class LatentPipelineTest(unittest.TestCase):
                 max_steps=500,
                 terminal_penalty=-10.0,
                 value_target_mode="full-episode",
+                search_depth=5,
+                warmup_pretrain_updates=200,
             )
             loaded = load_latent_checkpoint(path, device=torch.device("cpu"))
             self.assertEqual(loaded[0].input_channels, 5)
@@ -231,6 +257,8 @@ class LatentPipelineTest(unittest.TestCase):
             self.assertEqual(loaded[4]["value_discount"], 0.997)
             self.assertEqual(loaded[4]["terminal_penalty"], -10.0)
             self.assertEqual(loaded[4]["value_target_mode"], "full-episode")
+            self.assertEqual(loaded[4]["search_depth"], 5)
+            self.assertEqual(loaded[4]["warmup_pretrain_updates"], 200)
             self.assertEqual(loaded[4]["temperature_hold"], 0.5)
 
 

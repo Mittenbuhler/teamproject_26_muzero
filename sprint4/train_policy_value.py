@@ -17,7 +17,7 @@ from models import DynamicsModel, ImageRepresentationNetwork, PolicyNetwork, Val
 from utils import ensure_dir
 
 
-LATENT_TRAINING_VERSION = 6
+LATENT_TRAINING_VERSION = 9
 
 
 def parse_simulations(value):
@@ -110,6 +110,7 @@ def make_latent_mcts(
     simulations,
     discount,
     max_steps,
+    search_depth=5,
 ):
     return ModelBasedMCTS(
         dynamics_model=dynamics_model,
@@ -120,7 +121,8 @@ def make_latent_mcts(
         simulations=simulations,
         discount=discount,
         exploration_c=1.4,
-        reward_scale=1.0 / discounted_return_scale(discount, max_steps),
+        reward_scale=1.0,
+        max_depth=search_depth,
     )
 
 
@@ -143,6 +145,7 @@ def train_latent_step(
         target_policies,
         target_values,
         target_rewards,
+        policy_weights,
     ) = buffer.sample(batch_size, action_dim=action_dim, device=device)
 
     optimizer.zero_grad()
@@ -154,9 +157,16 @@ def train_latent_step(
     with torch.no_grad():
         target_next_latents = representation_network(next_observations)
 
-    policy_loss = -(
+    per_sample_policy_loss = -(
         target_policies * torch.log(policy_predictions + 1e-8)
-    ).sum(dim=1).mean()
+    ).sum(dim=1, keepdim=True)
+    policy_weight_sum = policy_weights.sum()
+    if policy_weight_sum > 0:
+        policy_loss = (
+            per_sample_policy_loss * policy_weights
+        ).sum() / policy_weight_sum
+    else:
+        policy_loss = per_sample_policy_loss.sum() * 0.0
     value_loss = F.mse_loss(value_predictions, target_values)
     reward_loss = F.mse_loss(predicted_rewards, target_rewards)
     consistency_loss = F.smooth_l1_loss(
@@ -295,6 +305,7 @@ def train_latent_muzero(
     hidden_dim=128,
     learning_rate=3e-4,
     warmup_episodes=10,
+    warmup_pretrain_updates=200,
     exploration_episodes=180,
     minimum_temperature=0.25,
     temperature_hold=0.5,
@@ -303,6 +314,7 @@ def train_latent_muzero(
     bootstrap_steps=10,
     value_target_mode="full-episode",
     terminal_penalty=-10.0,
+    search_depth=5,
     image_size=32,
     stack_size=5,
     latent_dim=32,
@@ -324,10 +336,14 @@ def train_latent_muzero(
         raise ValueError("The configured representation architecture requires five frames.")
     if value_target_mode not in {"full-episode", "n-step"}:
         raise ValueError("value_target_mode must be 'full-episode' or 'n-step'.")
+    if search_depth <= 0:
+        raise ValueError("search_depth must be positive.")
     if not 0.0 <= minimum_temperature <= temperature_hold <= 1.0:
         raise ValueError(
             "Temperatures must satisfy 0 <= minimum <= hold <= 1."
         )
+    if warmup_pretrain_updates < 0:
+        raise ValueError("warmup_pretrain_updates cannot be negative.")
 
     target_simulations, initial_simulations = parse_simulations(simulations)
     screenshot_config = ScreenshotConfig(width=image_size, height=image_size)
@@ -373,6 +389,7 @@ def train_latent_muzero(
         current_simulations,
         value_discount,
         max_steps,
+        search_depth=search_depth,
     )
 
     history = {
@@ -393,6 +410,7 @@ def train_latent_muzero(
     best_evaluation_reward = float("-inf")
     temperature_unlock_episode = None
     temperature_at_unlock = None
+    reward_target_scale = discounted_return_scale(value_discount, max_steps)
 
     for episode in range(episodes):
         observation, _ = env.reset(seed=seed + episode)
@@ -416,12 +434,14 @@ def train_latent_muzero(
             if episode < warmup_episodes:
                 action = env.action_space.sample()
                 policy_target = np.ones(action_dim, dtype=np.float32) / action_dim
+                policy_weight = 0.0
                 search_value = 0.0
             else:
                 root_latent = representation_network.encode(stacked_observation)
                 root = mcts.search(root_latent)
                 action, _ = select_action(root, temperature=temperature)
                 policy_target = visit_count_policy(root, temperature=1.0)
+                policy_weight = 1.0
                 search_value = root.mean_value
 
             next_observation, reward, terminated, truncated, _ = env.step(action)
@@ -437,6 +457,7 @@ def train_latent_muzero(
                     "action": action,
                     "next_observation": next_stacked_observation.copy(),
                     "policy": np.asarray(policy_target, dtype=np.float32),
+                    "policy_weight": policy_weight,
                     "search_value": float(search_value),
                     "reward": learning_reward,
                 }
@@ -467,7 +488,8 @@ def train_latent_muzero(
                 transition["next_observation"],
                 transition["policy"],
                 value_target,
-                transition["reward"],
+                transition["reward"] / reward_target_scale,
+                policy_weight=transition["policy_weight"],
             )
 
         history["rewards"].append(total_reward)
@@ -476,6 +498,35 @@ def train_latent_muzero(
 
         if len(buffer) >= batch_size:
             for _ in range(updates_per_episode):
+                losses = train_latent_step(
+                    representation_network,
+                    dynamics_model,
+                    policy_network,
+                    value_network,
+                    buffer,
+                    optimizer,
+                    batch_size,
+                    action_dim,
+                    consistency_weight,
+                    device,
+                )
+                history["total_losses"].append(losses["total_loss"])
+                history["policy_losses"].append(losses["policy_loss"])
+                history["value_losses"].append(losses["value_loss"])
+                history["reward_losses"].append(losses["reward_loss"])
+                history["consistency_losses"].append(losses["consistency_loss"])
+
+        if (
+            warmup_pretrain_updates > 0
+            and episode + 1 == warmup_episodes
+            and len(buffer) >= batch_size
+        ):
+            print(
+                "latent warmup pretrain "
+                f"updates={warmup_pretrain_updates} "
+                "policy_targets=off"
+            )
+            for _ in range(warmup_pretrain_updates):
                 losses = train_latent_step(
                     representation_network,
                     dynamics_model,
@@ -599,6 +650,8 @@ def train_latent_muzero(
                     max_steps=max_steps,
                     terminal_penalty=terminal_penalty,
                     value_target_mode=value_target_mode,
+                    search_depth=search_depth,
+                    warmup_pretrain_updates=warmup_pretrain_updates,
                     minimum_temperature=minimum_temperature,
                     temperature_hold=temperature_hold,
                     temperature_unlock_reward_threshold=(
@@ -633,6 +686,8 @@ def save_latent_checkpoint(
     max_steps=500,
     terminal_penalty=-10.0,
     value_target_mode="full-episode",
+    search_depth=5,
+    warmup_pretrain_updates=200,
     minimum_temperature=0.25,
     temperature_hold=0.5,
     temperature_unlock_reward_threshold=20.0,
@@ -654,6 +709,8 @@ def save_latent_checkpoint(
             "max_steps": max_steps,
             "terminal_penalty": terminal_penalty,
             "value_target_mode": value_target_mode,
+            "search_depth": search_depth,
+            "warmup_pretrain_updates": warmup_pretrain_updates,
             "minimum_temperature": minimum_temperature,
             "temperature_hold": temperature_hold,
             "temperature_unlock_reward_threshold": (
@@ -817,6 +874,7 @@ def parse_args():
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--warmup-episodes", type=int, default=10)
+    parser.add_argument("--warmup-pretrain-updates", type=int, default=200)
     parser.add_argument("--exploration-episodes", type=int, default=180)
     parser.add_argument("--minimum-temperature", type=float, default=0.25)
     parser.add_argument("--temperature-hold", type=float, default=0.5)
@@ -833,6 +891,7 @@ def parse_args():
         default="full-episode",
     )
     parser.add_argument("--terminal-penalty", type=float, default=-10.0)
+    parser.add_argument("--search-depth", type=int, default=5)
     parser.add_argument("--consistency-weight", type=float, default=0.25)
     parser.add_argument("--save-best-checkpoint", action="store_true")
     parser.add_argument("--checkpoint-eval-interval", type=int, default=20)
@@ -864,6 +923,7 @@ def main():
         hidden_dim=args.hidden_dim,
         learning_rate=args.learning_rate,
         warmup_episodes=args.warmup_episodes,
+        warmup_pretrain_updates=args.warmup_pretrain_updates,
         exploration_episodes=args.exploration_episodes,
         minimum_temperature=args.minimum_temperature,
         temperature_hold=args.temperature_hold,
@@ -874,6 +934,7 @@ def main():
         bootstrap_steps=args.bootstrap_steps,
         value_target_mode=args.value_target_mode,
         terminal_penalty=args.terminal_penalty,
+        search_depth=args.search_depth,
         consistency_weight=args.consistency_weight,
         save_best_checkpoint=args.save_best_checkpoint,
         checkpoint_path=args.save_path,
@@ -899,6 +960,8 @@ def main():
             max_steps=args.max_steps,
             terminal_penalty=args.terminal_penalty,
             value_target_mode=args.value_target_mode,
+            search_depth=args.search_depth,
+            warmup_pretrain_updates=args.warmup_pretrain_updates,
             minimum_temperature=args.minimum_temperature,
             temperature_hold=args.temperature_hold,
             temperature_unlock_reward_threshold=(

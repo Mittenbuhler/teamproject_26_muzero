@@ -61,6 +61,7 @@ class ModelBasedMCTS:
         discount=0.997,
         exploration_c=1.4,
         reward_scale=1.0,
+        max_depth=5,
     ):
         self.dynamics_model = dynamics_model
         self.policy_network = policy_network
@@ -71,6 +72,9 @@ class ModelBasedMCTS:
         self.discount = discount
         self.exploration_c = exploration_c
         self.reward_scale = reward_scale
+        self.max_depth = int(max_depth)
+        if self.max_depth <= 0:
+            raise ValueError("max_depth must be positive")
 
     def search(self, root_state):
         root = MCTSNode(
@@ -84,11 +88,15 @@ class ModelBasedMCTS:
             node = root
             path = [node]
 
-            while node.is_expanded() and not node.done:
+            while (
+                node.is_expanded()
+                and not node.done
+                and node.depth < self.max_depth
+            ):
                 node = self.select_child(node)
                 path.append(node)
 
-            if not node.done:
+            if not node.done and node.depth < self.max_depth:
                 self.expand(node)
 
             leaf_value = self.evaluate_leaf(node)

@@ -172,6 +172,7 @@ def train_from_args(args, checkpoint_path, device):
         hidden_dim=args.hidden_dim,
         learning_rate=args.learning_rate,
         warmup_episodes=args.warmup_episodes,
+        warmup_pretrain_updates=args.warmup_pretrain_updates,
         exploration_episodes=args.exploration_episodes,
         minimum_temperature=args.minimum_temperature,
         temperature_hold=args.temperature_hold,
@@ -182,6 +183,7 @@ def train_from_args(args, checkpoint_path, device):
         bootstrap_steps=args.bootstrap_steps,
         value_target_mode=args.value_target_mode,
         terminal_penalty=args.terminal_penalty,
+        search_depth=args.search_depth,
         consistency_weight=args.consistency_weight,
         save_best_checkpoint=args.save_best_checkpoint,
         checkpoint_path=checkpoint_path,
@@ -213,6 +215,8 @@ def train_from_args(args, checkpoint_path, device):
             max_steps=args.max_steps,
             terminal_penalty=args.terminal_penalty,
             value_target_mode=args.value_target_mode,
+            search_depth=args.search_depth,
+            warmup_pretrain_updates=args.warmup_pretrain_updates,
             minimum_temperature=args.minimum_temperature,
             temperature_hold=args.temperature_hold,
             temperature_unlock_reward_threshold=(
@@ -226,6 +230,8 @@ def train_from_args(args, checkpoint_path, device):
             "max_steps": args.max_steps,
             "terminal_penalty": args.terminal_penalty,
             "value_target_mode": args.value_target_mode,
+            "search_depth": args.search_depth,
+            "warmup_pretrain_updates": args.warmup_pretrain_updates,
             "minimum_temperature": args.minimum_temperature,
             "temperature_hold": args.temperature_hold,
             "temperature_unlock_reward_threshold": (
@@ -285,6 +291,7 @@ def run(args):
     stack_size = checkpoint.get("stack_size", 5)
     search_discount = checkpoint.get("value_discount", args.value_discount)
     reward_horizon = checkpoint.get("max_steps", args.max_steps)
+    search_depth = checkpoint.get("search_depth", args.search_depth)
     eval_mcts = make_latent_mcts(
         dynamics,
         policy,
@@ -293,6 +300,7 @@ def run(args):
         simulations=args.eval_simulations,
         discount=search_discount,
         max_steps=reward_horizon,
+        search_depth=search_depth,
     )
     frames, reward = collect_annotated_playthrough(
         args.env,
@@ -329,6 +337,7 @@ def parse_args():
     parser.add_argument("--buffer-capacity", type=int, default=20000)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--warmup-episodes", type=int, default=10)
+    parser.add_argument("--warmup-pretrain-updates", type=int, default=200)
     parser.add_argument("--exploration-episodes", type=int, default=180)
     parser.add_argument("--minimum-temperature", type=float, default=0.25)
     parser.add_argument("--temperature-hold", type=float, default=0.5)
@@ -345,6 +354,7 @@ def parse_args():
         default="full-episode",
     )
     parser.add_argument("--terminal-penalty", type=float, default=-10.0)
+    parser.add_argument("--search-depth", type=int, default=5)
     parser.add_argument("--consistency-weight", type=float, default=0.25)
     parser.add_argument(
         "--simulations",

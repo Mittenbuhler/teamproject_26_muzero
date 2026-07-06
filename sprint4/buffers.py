@@ -102,10 +102,20 @@ class LatentReplayBuffer:
                 "policy",
                 "value",
                 "reward",
+                "policy_weight",
             ],
         )
 
-    def add(self, observation, action, next_observation, policy, value, reward):
+    def add(
+        self,
+        observation,
+        action,
+        next_observation,
+        policy,
+        value,
+        reward,
+        policy_weight=1.0,
+    ):
         self.memory.append(
             self.experience(
                 np.asarray(observation, dtype=np.float32),
@@ -114,6 +124,7 @@ class LatentReplayBuffer:
                 np.asarray(policy, dtype=np.float32),
                 np.float32(value),
                 np.float32(reward),
+                np.float32(policy_weight),
             )
         )
 
@@ -142,6 +153,9 @@ class LatentReplayBuffer:
         rewards = torch.as_tensor(
             np.asarray([[e.reward] for e in batch]), dtype=torch.float32
         )
+        policy_weights = torch.as_tensor(
+            np.asarray([[e.policy_weight] for e in batch]), dtype=torch.float32
+        )
 
         if device is not None:
             observations = observations.to(device)
@@ -150,8 +164,17 @@ class LatentReplayBuffer:
             policies = policies.to(device)
             values = values.to(device)
             rewards = rewards.to(device)
+            policy_weights = policy_weights.to(device)
 
-        return observations, actions, next_observations, policies, values, rewards
+        return (
+            observations,
+            actions,
+            next_observations,
+            policies,
+            values,
+            rewards,
+            policy_weights,
+        )
 
     def __len__(self):
         return len(self.memory)

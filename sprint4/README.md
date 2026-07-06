@@ -55,10 +55,20 @@ The tree logic remains model-based:
 The real environment decides episode termination. Imagined latent states do not
 currently have a terminal head.
 
+Search depth is capped with `--search-depth` because the recurrent dynamics is
+trained on one-step image transitions. The default depth is `5`: MCTS imagines a
+short latent rollout, then bootstraps from the value network instead of
+expanding many untrained recurrent steps.
+
 ## Joint Training
 
 Training starts with a short random-action warm-up so the replay buffer contains
 varied visual transitions before MCTS depends on the initially random model.
+Warm-up transitions train value, reward, and latent dynamics, but their uniform
+random-action policy targets are ignored so the policy is not taught that both
+actions are always equally good. After warm-up, `--warmup-pretrain-updates`
+runs extra representation/dynamics/value updates before MCTS becomes the policy
+teacher.
 After warm-up, action temperature anneals from `1.0` but cannot fall below
 `0.5` until deterministic checkpoint evaluation reaches reward `20`. Once the
 gate unlocks, temperature gradually anneals from its current value toward
@@ -77,7 +87,8 @@ All four networks are optimized together:
 - **Value loss:** predicted value versus the discounted shaped rewards from that
   state through the actual end of the episode, scaled by the maximum discounted
   return. This target does not bootstrap from an estimated MCTS value.
-- **Reward loss:** dynamics reward prediction versus the shaped transition reward.
+- **Reward loss:** dynamics reward prediction versus the shaped transition
+  reward on the same normalized scale used by value targets and MCTS backups.
 - **Latent consistency loss:** predicted next latent versus the representation
   of the real next five-frame observation.
 
@@ -119,6 +130,7 @@ python -m pip install -r requirements.txt
 python train_policy_value.py \
   --episodes 800 \
   --warmup-episodes 20 \
+  --warmup-pretrain-updates 400 \
   --exploration-episodes 600 \
   --minimum-temperature 0.25 \
   --temperature-hold 0.5 \
@@ -126,6 +138,7 @@ python train_policy_value.py \
   --learning-rate 0.00015 \
   --value-discount 0.997 \
   --terminal-penalty -10 \
+  --search-depth 5 \
   --value-target-mode full-episode \
   --simulations 50 \
   --batch-size 64 \
