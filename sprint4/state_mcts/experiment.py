@@ -1,10 +1,10 @@
 """Train optional vector-state models and evaluate their MCTS substitutions.
 
 Examples:
-    python modular_state_cartpole.py --models none
-    python modular_state_cartpole.py --models value
-    python modular_state_cartpole.py --models policy,dynamics
-    python modular_state_cartpole.py --models all --ablation
+    python -m state_mcts.experiment --models none
+    python -m state_mcts.experiment --models value
+    python -m state_mcts.experiment --models policy,dynamics
+    python -m state_mcts.experiment --models all --ablation
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from state_mcts import (
+from .search import (
     ExactCartPoleDynamics,
     LearnedCartPoleDynamics,
     ModularMCTS,
@@ -31,7 +31,7 @@ from state_mcts import (
     UniformPrior,
     select_mcts_action,
 )
-from state_training import (
+from .training import (
     collect_state_dataset,
     dynamics_curriculum,
     load_component,
@@ -568,8 +568,10 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--eval-seed", type=int, default=10_000)
     parser.add_argument("--checkpoint-dir", default="checkpoints/state_mcts")
-    parser.add_argument("--loss-dir", default="artifacts/state_losses")
-    parser.add_argument("--report-path", default="artifacts/state_mcts_report.json")
+    parser.add_argument("--loss-dir", default="artifacts/state_mcts/losses")
+    parser.add_argument(
+        "--report-path", default="artifacts/state_mcts/state_mcts_report.json"
+    )
     parser.add_argument("--reuse-checkpoints", action="store_true")
     return parser.parse_args(argv)
 

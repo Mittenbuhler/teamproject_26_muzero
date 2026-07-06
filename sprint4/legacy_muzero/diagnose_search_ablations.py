@@ -8,14 +8,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from image_observation import ScreenshotConfig, make_image_env
-from train_policy_value import (
+from .image_observation import ScreenshotConfig, make_image_env
+from .train_policy_value import (
     evaluate_latent_agent,
     load_latent_checkpoint,
     make_frame_stack,
     make_latent_mcts,
 )
-from utils import ensure_dir
+from .utils import ensure_dir
 
 
 def summarize(rewards):
@@ -68,14 +68,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/latent_muzero_terminal_v9.pt",
+        default="checkpoints/legacy_muzero/latent_muzero_terminal_v9.pt",
     )
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--simulations", type=int, default=50)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--output",
-        default="artifacts/search_ablations.json",
+        default="artifacts/legacy_muzero/diagnostics/search_ablations.json",
     )
     args = parser.parse_args()
     random.seed(args.seed)

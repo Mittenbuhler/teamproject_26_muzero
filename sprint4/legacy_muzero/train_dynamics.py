@@ -5,9 +5,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from buffers import DynamicsReplayBuffer
-from models import DynamicsModel
-from utils import ensure_dir, one_hot
+from .buffers import DynamicsReplayBuffer
+from .models import DynamicsModel
+from .utils import ensure_dir, one_hot
 
 
 def collect_transitions(env, buffer, episodes=200, max_steps=500, epsilon=1.0, seed=0):
@@ -172,7 +172,9 @@ def parse_args():
     parser.add_argument("--epsilon", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=150)
-    parser.add_argument("--save-path", default="checkpoints/dynamics_cartpole.pt")
+    parser.add_argument(
+        "--save-path", default="checkpoints/legacy_muzero/dynamics_cartpole.pt"
+    )
     parser.add_argument("--load-path", default="")
     return parser.parse_args()
 

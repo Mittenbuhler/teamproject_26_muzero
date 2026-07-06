@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from build_artifact_dashboard import generate_dashboard
-from dashboard_server import rename_run, update_folders
+from state_mcts.dashboard import generate_dashboard
+from state_mcts.dashboard_server import rename_run, update_folders
 
 
 class ArtifactDashboardTest(unittest.TestCase):

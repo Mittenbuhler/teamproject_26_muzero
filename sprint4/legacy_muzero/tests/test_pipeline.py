@@ -5,12 +5,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from buffers import LatentReplayBuffer
-from diagnose_policy_behavior import policy_reactivity_test
-from image_observation import FrameStack
-from mcts import ModelBasedMCTS
-from models import DynamicsModel, ImageRepresentationNetwork, PolicyNetwork, ValueNetwork
-from train_policy_value import (
+from legacy_muzero.buffers import LatentReplayBuffer
+from legacy_muzero.diagnose_policy_behavior import policy_reactivity_test
+from legacy_muzero.image_observation import FrameStack
+from legacy_muzero.mcts import ModelBasedMCTS
+from legacy_muzero.models import DynamicsModel, ImageRepresentationNetwork, PolicyNetwork, ValueNetwork
+from legacy_muzero.train_policy_value import (
     bootstrapped_value_targets,
     discounted_return_scale,
     full_episode_value_targets,

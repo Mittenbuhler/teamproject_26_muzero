@@ -9,9 +9,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from diagnose_latent_muzero import collect_diagnostic_episodes, finite_float
-from train_policy_value import load_latent_checkpoint
-from utils import ensure_dir
+from .diagnose_latent_muzero import collect_diagnostic_episodes, finite_float
+from .train_policy_value import load_latent_checkpoint
+from .utils import ensure_dir
 
 
 class TerminalProbe(nn.Module):
@@ -218,7 +218,7 @@ def parse_args():
     )
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/latent_muzero_cartpole.pt",
+        default="checkpoints/legacy_muzero/latent_muzero_cartpole.pt",
     )
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--simulations", type=int, default=50)
@@ -227,7 +227,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--output",
-        default="artifacts/terminal_probe.json",
+        default="artifacts/legacy_muzero/diagnostics/terminal_probe.json",
     )
     return parser.parse_args()
 

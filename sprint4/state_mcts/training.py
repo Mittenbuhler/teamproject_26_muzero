@@ -10,8 +10,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from models import DynamicsModel, PolicyNetwork, ValueNetwork
-from state_mcts import ExactCartPoleDynamics
+from .models import DynamicsModel, PolicyNetwork, ValueNetwork
+from .search import ExactCartPoleDynamics
 
 
 @dataclass

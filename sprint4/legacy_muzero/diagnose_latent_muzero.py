@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from image_observation import ScreenshotConfig, make_image_env
-from mcts import ModelBasedMCTS, select_action, visit_count_policy
-from train_policy_value import (
+from .image_observation import ScreenshotConfig, make_image_env
+from .mcts import ModelBasedMCTS, select_action, visit_count_policy
+from .train_policy_value import (
     bootstrapped_value_targets,
     full_episode_value_targets,
     load_latent_checkpoint,
@@ -21,7 +21,7 @@ from train_policy_value import (
     shaped_environment_reward,
     train_latent_step,
 )
-from utils import ensure_dir
+from .utils import ensure_dir
 
 
 def finite_float(value):
@@ -1051,7 +1051,7 @@ def parse_args():
     )
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/latent_muzero_cartpole.pt",
+        default="checkpoints/legacy_muzero/latent_muzero_cartpole.pt",
     )
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--simulations", type=int, default=50)
@@ -1062,7 +1062,7 @@ def parse_args():
     parser.add_argument("--consistency-weight", type=float, default=0.25)
     parser.add_argument(
         "--output",
-        default="artifacts/latent_muzero_diagnostics.json",
+        default="artifacts/legacy_muzero/diagnostics/latent_muzero_diagnostics.json",
     )
     return parser.parse_args()
 

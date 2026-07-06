@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from diagnose_latent_muzero import collect_diagnostic_episodes, describe
-from train_policy_value import load_latent_checkpoint
-from utils import ensure_dir
+from .diagnose_latent_muzero import collect_diagnostic_episodes, describe
+from .train_policy_value import load_latent_checkpoint
+from .utils import ensure_dir
 
 
 REACTIVITY_CRITERIA = {
@@ -297,7 +297,7 @@ def parse_args():
     )
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/latent_muzero_terminal_v9.pt",
+        default="checkpoints/legacy_muzero/latent_muzero_terminal_v9.pt",
     )
     parser.add_argument("--episodes", type=int, default=30)
     parser.add_argument("--simulations", type=int, default=50)
@@ -306,7 +306,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--output",
-        default="artifacts/policy_reactivity.json",
+        default="artifacts/legacy_muzero/diagnostics/policy_reactivity.json",
     )
     return parser.parse_args()
 

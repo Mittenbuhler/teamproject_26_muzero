@@ -8,9 +8,9 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from image_observation import FrameStack, ScreenshotConfig, ScreenshotPreprocessor
-from mcts import select_action, visit_count_policy
-from train_policy_value import (
+from .image_observation import FrameStack, ScreenshotConfig, ScreenshotPreprocessor
+from .mcts import select_action, visit_count_policy
+from .train_policy_value import (
     load_latent_checkpoint,
     make_latent_mcts,
     parse_simulations,
@@ -18,7 +18,7 @@ from train_policy_value import (
     save_training_progress_plot,
     train_latent_muzero,
 )
-from utils import ensure_dir
+from .utils import ensure_dir
 
 
 def display_font(size=18):
@@ -289,8 +289,8 @@ def parse_args():
         description="Train or run five-frame image-latent MuZero CartPole."
     )
     parser.add_argument("--env", default="CartPole-v1")
-    parser.add_argument("--artifact-dir", default="artifacts")
-    parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument("--artifact-dir", default="artifacts/legacy_muzero")
+    parser.add_argument("--checkpoint-dir", default="checkpoints/legacy_muzero")
     parser.add_argument(
         "--checkpoint-path",
         help="Exact latent checkpoint to load or train; overrides --checkpoint-dir.",

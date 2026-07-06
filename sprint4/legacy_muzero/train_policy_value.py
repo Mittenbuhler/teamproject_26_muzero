@@ -10,11 +10,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from buffers import LatentReplayBuffer
-from image_observation import FrameStack, ScreenshotConfig, make_image_env
-from mcts import ModelBasedMCTS, select_action, visit_count_policy
-from models import DynamicsModel, ImageRepresentationNetwork, PolicyNetwork, ValueNetwork
-from utils import ensure_dir
+from .buffers import LatentReplayBuffer
+from .image_observation import FrameStack, ScreenshotConfig, make_image_env
+from .mcts import ModelBasedMCTS, select_action, visit_count_policy
+from .models import DynamicsModel, ImageRepresentationNetwork, PolicyNetwork, ValueNetwork
+from .utils import ensure_dir
 
 
 LATENT_TRAINING_VERSION = 10
@@ -368,7 +368,7 @@ def train_latent_muzero(
     unroll_steps=5,
     consistency_weight=0.25,
     save_best_checkpoint=True,
-    checkpoint_path="checkpoints/latent_muzero_cartpole.pt",
+    checkpoint_path="checkpoints/legacy_muzero/latent_muzero_cartpole.pt",
     checkpoint_eval_interval=20,
     checkpoint_eval_episodes=20,
     simulation_upgrade_reward_threshold=20.0,
@@ -1008,11 +1008,16 @@ def parse_args():
         description="Train five-frame image-latent MuZero on CartPole."
     )
     parser.add_argument("--env", default="CartPole-v1")
-    parser.add_argument("--save-path", default="checkpoints/latent_muzero_cartpole.pt")
-    parser.add_argument("--loss-plot-path", default="artifacts/latent_muzero_loss.png")
+    parser.add_argument(
+        "--save-path", default="checkpoints/legacy_muzero/latent_muzero_cartpole.pt"
+    )
+    parser.add_argument(
+        "--loss-plot-path",
+        default="artifacts/legacy_muzero/latent_muzero_loss.png",
+    )
     parser.add_argument(
         "--training-plot-path",
-        default="artifacts/latent_muzero_training_progress.png",
+        default="artifacts/legacy_muzero/latent_muzero_training_progress.png",
     )
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--max-steps", type=int, default=500)

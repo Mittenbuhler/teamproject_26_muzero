@@ -8,14 +8,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from diagnose_latent_muzero import collect_diagnostic_episodes, describe
-from diagnose_policy_behavior import (
+from .diagnose_latent_muzero import collect_diagnostic_episodes, describe
+from .diagnose_policy_behavior import (
     cross_validated_state_prediction,
     episode_folds,
 )
-from image_observation import ScreenshotConfig, make_image_env
-from train_policy_value import load_latent_checkpoint
-from utils import ensure_dir
+from .image_observation import ScreenshotConfig, make_image_env
+from .train_policy_value import load_latent_checkpoint
+from .utils import ensure_dir
 
 
 STATE_NAMES = ("cart_position", "cart_velocity", "pole_angle", "pole_angular_velocity")
@@ -364,7 +364,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/latent_muzero_terminal_v9.pt",
+        default="checkpoints/legacy_muzero/latent_muzero_terminal_v9.pt",
     )
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--simulations", type=int, default=50)
@@ -374,7 +374,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--output",
-        default="artifacts/mcts_failure_diagnostics.json",
+        default="artifacts/legacy_muzero/diagnostics/mcts_failure_diagnostics.json",
     )
     return parser.parse_args()
 

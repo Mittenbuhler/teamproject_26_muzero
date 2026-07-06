@@ -12,7 +12,7 @@ import threading
 from urllib.parse import urlparse
 import webbrowser
 
-from build_artifact_dashboard import generate_dashboard
+from .dashboard import generate_dashboard
 
 
 def write_report_atomic(report_path, report):
@@ -166,7 +166,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact-dir", default="artifacts")
+    parser.add_argument("--artifact-dir", default="artifacts/state_mcts")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
         "--open-browser",

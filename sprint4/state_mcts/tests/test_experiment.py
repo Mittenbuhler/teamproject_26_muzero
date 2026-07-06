@@ -7,7 +7,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from modular_state_cartpole import (
+from state_mcts.experiment import (
     build_mcts,
     component_configurations,
     load_report_history,
@@ -15,7 +15,7 @@ from modular_state_cartpole import (
     write_loss_graph,
     write_report_history,
 )
-from state_mcts import (
+from state_mcts.search import (
     ExactCartPoleDynamics,
     LearnedCartPoleDynamics,
     ModularMCTS,
@@ -24,7 +24,7 @@ from state_mcts import (
     UniformPrior,
     select_mcts_action,
 )
-from state_training import (
+from state_mcts.training import (
     collect_state_dataset,
     curriculum_horizon,
     dynamics_curriculum,

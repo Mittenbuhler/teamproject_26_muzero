@@ -6,40 +6,40 @@ Run these commands from `teamproject_26_muzero/sprint4`:
 
 ```bash
 # Show every CLI option
-python modular_state_cartpole.py --help
+python -m state_mcts.experiment --help
 
 # Exact-dynamics MCTS baseline: UCT + random rollouts
-python modular_state_cartpole.py --models none
+python -m state_mcts.experiment --models none
 
 # Train and evaluate exactly one learned component
-python modular_state_cartpole.py --models dynamics
-python modular_state_cartpole.py --models policy
-python modular_state_cartpole.py --models value
+python -m state_mcts.experiment --models dynamics
+python -m state_mcts.experiment --models policy
+python -m state_mcts.experiment --models value
 
 # Train all components and evaluate only the complete system
-python modular_state_cartpole.py --models all
+python -m state_mcts.experiment --models all
 
 # Train all components and evaluate all eight component combinations
-python modular_state_cartpole.py --models all --ablation
+python -m state_mcts.experiment --models all --ablation
 
 # Re-evaluate compatible existing checkpoints without retraining
-python modular_state_cartpole.py --models all --ablation --reuse-checkpoints
+python -m state_mcts.experiment --models all --ablation --reuse-checkpoints
 
 # More reliable evaluation using fixed seeds and a separate report path
-python modular_state_cartpole.py \
+python -m state_mcts.experiment \
   --models all \
   --ablation \
   --eval-episodes 50 \
   --eval-seed 10000 \
-  --report-path artifacts/state_mcts_ablation_report.json
+  --report-path artifacts/state_mcts/state_mcts_ablation_report.json
 
 # Change the global MCTS lookahead for any model combination. When dynamics is
 # trained, its multi-step horizon automatically uses the same value.
-python modular_state_cartpole.py --models dynamics --search-depth 40
-python modular_state_cartpole.py --models policy,value --search-depth 40
+python -m state_mcts.experiment --models dynamics --search-depth 40
+python -m state_mcts.experiment --models policy,value --search-depth 40
 
 # Fast smoke run
-python modular_state_cartpole.py \
+python -m state_mcts.experiment \
   --models all \
   --train-samples 1000 \
   --train-epochs 5 \
@@ -47,15 +47,15 @@ python modular_state_cartpole.py \
   --eval-episodes 2
 
 # Run focused tests or the complete state/legacy regression suite
-python -m unittest -v test_state_mcts.py test_artifact_dashboard.py
-python -m unittest -v test_state_mcts.py test_artifact_dashboard.py test_latent_pipeline.py
+python -m unittest -v state_mcts.tests.test_experiment state_mcts.tests.test_dashboard
+python -m unittest -v state_mcts.tests.test_experiment state_mcts.tests.test_dashboard legacy_muzero.tests.test_pipeline
 
 # Rebuild and open the read-only dashboard
-python build_artifact_dashboard.py
-open artifacts/diagnostics_dashboard.html
+python -m state_mcts.dashboard
+open artifacts/state_mcts/diagnostics_dashboard.html
 
 # Run editable mode (persistent run names)
-python dashboard_server.py
+python -m state_mcts.dashboard_server
 # The editable dashboard opens automatically in your default browser.
 ```
 
@@ -214,26 +214,26 @@ for both policy and value and is independent of search depth.
 From this directory:
 
 ```bash
-python modular_state_cartpole.py --models none
-python modular_state_cartpole.py --models dynamics
-python modular_state_cartpole.py --models policy
-python modular_state_cartpole.py --models value
-python modular_state_cartpole.py --models all --ablation
+python -m state_mcts.experiment --models none
+python -m state_mcts.experiment --models dynamics
+python -m state_mcts.experiment --models policy
+python -m state_mcts.experiment --models value
+python -m state_mcts.experiment --models all --ablation
 ```
 
 `--models all --ablation` trains each model once and evaluates all eight model
 subsets. Use `--reuse-checkpoints` to repeat evaluation without retraining.
 Each run appends a timestamped entry to the JSON report, by default
-`artifacts/state_mcts_report.json`. Existing runs are never overwritten. A run
+`artifacts/state_mcts/state_mcts_report.json`. Existing runs are never overwritten. A run
 is saved before training, after training, after each ablation, and on failure or
 interruption, so long dynamics evaluations still leave a useful partial record.
 
 Per-epoch optimization losses are written separately from the main report:
 
 ```text
-artifacts/state_losses/<run_id>/dynamics.svg
-artifacts/state_losses/<run_id>/policy.svg
-artifacts/state_losses/<run_id>/value.svg
+artifacts/state_mcts/losses/<run_id>/dynamics.svg
+artifacts/state_mcts/losses/<run_id>/policy.svg
+artifacts/state_mcts/losses/<run_id>/value.svg
 ```
 
 Only selected models receive a graph. Each self-contained SVG plots mean
@@ -247,7 +247,7 @@ curve is unavailable.
 For a quick smoke test:
 
 ```bash
-python modular_state_cartpole.py \
+python -m state_mcts.experiment \
   --models all \
   --ablation \
   --train-samples 1000 \
@@ -261,13 +261,13 @@ same `--eval-seed` across configurations.
 
 ## Visual dashboard
 
-Build the self-contained dashboard for `artifacts/state_mcts_report.json`:
+Build the self-contained dashboard for `artifacts/state_mcts/state_mcts_report.json`:
 
 ```bash
-python build_artifact_dashboard.py
+python -m state_mcts.dashboard
 ```
 
-Then open `artifacts/diagnostics_dashboard.html`. The horizontal mean-reward
+Then open `artifacts/state_mcts/diagnostics_dashboard.html`. The horizontal mean-reward
 chart makes learning runs easy to compare, while each run also gets an episode-
 reward bar chart for variance and outliers. Clicking either graph opens that
 run's exact JSON. The complete `state_mcts_report.json` remains available in one
@@ -280,7 +280,7 @@ them back into `state_mcts_report.json`, start the localhost-only dashboard
 server instead:
 
 ```bash
-python dashboard_server.py
+python -m state_mcts.dashboard_server
 # Open: http://127.0.0.1:8000/
 ```
 
@@ -312,13 +312,13 @@ assignment, so it appears alphabetically under **Unfiled** until you organize
 it. Dashboard names and folder metadata are preserved if an experiment writes
 to the report while the server is open.
 
-Use `python dashboard_server.py --no-open-browser` when you do not want the
+Use `python -m state_mcts.dashboard_server --no-open-browser` when you do not want the
 browser window to open automatically.
 
 ## Tests
 
 ```bash
-python -m unittest -v test_state_mcts.py
+python -m unittest -v state_mcts.tests.test_experiment state_mcts.tests.test_dashboard
 ```
 
 The tests verify the exact simulator against actual Gym transitions, verify
