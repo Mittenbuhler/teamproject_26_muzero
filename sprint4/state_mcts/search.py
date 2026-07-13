@@ -156,17 +156,15 @@ class RandomRolloutEvaluator:
 
 
 class NetworkValueEvaluator:
-    """Adapts the existing normalized ValueNetwork to the search value scale."""
+    """Uses ValueNetwork as a broad, search-depth-independent leaf value."""
 
-    def __init__(self, network, search_depth, value_horizon=500):
+    def __init__(self, network, value_horizon=500):
         self.network = network
-        self.search_depth = search_depth
         self.value_horizon = value_horizon
 
     def evaluate(self, state, remaining_depth):
-        predicted_fraction = float(np.clip(self.network.value(state), 0.0, 1.0))
-        predicted_remaining_steps = predicted_fraction * self.value_horizon
-        return min(predicted_remaining_steps, remaining_depth) / self.search_depth
+        _ = remaining_depth
+        return float(np.clip(self.network.value(state), 0.0, 1.0))
 
 
 @dataclass
@@ -197,6 +195,7 @@ class ModularMCTS:
         evaluator: LeafEvaluator,
         simulations=64,
         search_depth=30,
+        bootstrap_after=0,
         exploration_c=1.4,
         discount=1.0,
         action_dim=2,
@@ -204,11 +203,14 @@ class ModularMCTS:
     ):
         if simulations <= 0 or search_depth <= 0:
             raise ValueError("simulations and search_depth must be positive")
+        if bootstrap_after < 0 or bootstrap_after > search_depth:
+            raise ValueError("bootstrap_after must be between 0 and search_depth")
         self.transitions = transitions
         self.priors = priors
         self.evaluator = evaluator
         self.simulations = simulations
         self.search_depth = search_depth
+        self.bootstrap_after = bootstrap_after
         self.exploration_c = exploration_c
         self.discount = discount
         self.action_dim = action_dim
@@ -220,11 +222,25 @@ class ModularMCTS:
         for _ in range(self.simulations):
             node = root
             path = [root]
-            while node.children and not node.done and node.depth < self.search_depth:
-                node = self._select(node)
-                path.append(node)
-            if not node.done and node.depth < self.search_depth:
-                self._expand(node)
+            if self.bootstrap_after == 0:
+                while node.children and not node.done and node.depth < self.search_depth:
+                    node = self._select(node)
+                    path.append(node)
+                if not node.done and node.depth < self.search_depth:
+                    self._expand(node)
+            else:
+                while not node.done and node.depth < self.search_depth:
+                    if node.children:
+                        node = self._select(node)
+                        path.append(node)
+                        continue
+                    self._expand(node)
+                    if node.depth >= self.bootstrap_after:
+                        break
+                    if not node.children:
+                        break
+                    node = self._select(node)
+                    path.append(node)
             remaining = max(0, self.search_depth - node.depth)
             leaf_value = 0.0 if node.done else self.evaluator.evaluate(node.state, remaining)
             self._backup(path, leaf_value)

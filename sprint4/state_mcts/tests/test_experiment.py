@@ -15,6 +15,14 @@ from state_mcts.experiment import (
     write_loss_graph,
     write_report_history,
 )
+from state_mcts.mcts_distillation import (
+    discounted_return_normalizer,
+    discounted_return_targets,
+    load_report_history as load_distillation_report_history,
+    parse_args as parse_distillation_args,
+    visit_distribution,
+    write_report_history as write_distillation_report_history,
+)
 from state_mcts.search import (
     ExactCartPoleDynamics,
     LearnedCartPoleDynamics,
@@ -33,6 +41,11 @@ from state_mcts.training import (
     train_dynamics,
     train_policy,
     train_value,
+)
+from state_mcts.value_mcts_diagnostic import (
+    select_records_to_store,
+    summarize_records,
+    value_implied_action,
 )
 
 
@@ -70,6 +83,29 @@ class ActionSensitiveTransitions:
         next_state = np.asarray(state, dtype=np.float32).copy()
         next_state[0] += 1.0
         return next_state, 1.0, action == 0
+
+
+class RightBetterTransitions:
+    def step(self, state, action):
+        next_state = np.asarray(state, dtype=np.float32).copy()
+        next_state[0] = 1.0 if action else 0.0
+        return next_state, 1.0, False
+
+
+class NonTerminalDepthTransitions:
+    def step(self, state, _action):
+        next_state = np.asarray(state, dtype=np.float32).copy()
+        next_state[0] += 1.0
+        return next_state, 1.0, False
+
+
+class DepthRecordingEvaluator:
+    def __init__(self):
+        self.depths = []
+
+    def evaluate(self, state, _remaining_depth):
+        self.depths.append(int(state[0]))
+        return 0.0
 
 
 class StateMCTSTest(unittest.TestCase):
@@ -115,6 +151,21 @@ class StateMCTSTest(unittest.TestCase):
         self.assertGreater(root.children[1].visits, root.children[0].visits)
         self.assertEqual(select_mcts_action(root), 1)
 
+    def test_bootstrap_after_delays_leaf_evaluation_depth(self):
+        evaluator = DepthRecordingEvaluator()
+        mcts = ModularMCTS(
+            NonTerminalDepthTransitions(),
+            UniformPrior(),
+            evaluator,
+            simulations=12,
+            search_depth=5,
+            bootstrap_after=3,
+            seed=0,
+        )
+        mcts.search(np.zeros(4, dtype=np.float32))
+        self.assertTrue(evaluator.depths)
+        self.assertGreaterEqual(min(evaluator.depths), 3)
+
     def test_each_toggle_replaces_only_its_component(self):
         env = gym.make("CartPole-v1")
         exact = ExactCartPoleDynamics.from_env(env)
@@ -159,12 +210,132 @@ class StateMCTSTest(unittest.TestCase):
         self.assertEqual(dynamics_curriculum(3), (3,))
         self.assertEqual(curriculum_horizon(29, 30, 30), 30)
 
-    def test_value_target_horizon_is_rescaled_not_retrained_for_search_depth(self):
+    def test_value_leaf_estimate_is_independent_of_search_depth(self):
         value = ConstantValue(0.5)
-        shallow = NetworkValueEvaluator(value, search_depth=10, value_horizon=100)
-        deep = NetworkValueEvaluator(value, search_depth=20, value_horizon=100)
-        self.assertEqual(shallow.evaluate(np.zeros(4), remaining_depth=10), 1.0)
-        self.assertEqual(deep.evaluate(np.zeros(4), remaining_depth=10), 0.5)
+        evaluator = NetworkValueEvaluator(value, value_horizon=100)
+        self.assertEqual(evaluator.evaluate(np.zeros(4), remaining_depth=10), 0.5)
+        self.assertEqual(evaluator.evaluate(np.zeros(4), remaining_depth=0), 0.5)
+
+    def test_discounted_return_targets_are_normalized_return_to_go(self):
+        self.assertEqual(discounted_return_normalizer(1.0, 4), 4.0)
+        targets = discounted_return_targets([1.0, 1.0, 1.0], discount=1.0, horizon=4)
+        np.testing.assert_allclose(targets, [0.75, 0.5, 0.25])
+
+        discounted = discounted_return_targets(
+            [1.0, 1.0],
+            discount=0.5,
+            horizon=3,
+        )
+        normalizer = 1.0 + 0.5 + 0.25
+        np.testing.assert_allclose(
+            discounted,
+            [(1.0 + 0.5) / normalizer, 1.0 / normalizer],
+        )
+
+    def test_distillation_value_target_cli_defaults(self):
+        default_args = parse_distillation_args(["--models", "value"])
+        self.assertIsNone(default_args.value_horizon)
+        self.assertEqual(default_args.discount, 1.0)
+
+        discounted_args = parse_distillation_args(
+            ["--models", "value", "--discount", "0.99", "--value-horizon", "500"]
+        )
+        self.assertAlmostEqual(discounted_args.discount, 0.99)
+        self.assertEqual(discounted_args.value_horizon, 500)
+
+    def test_mcts_visit_distribution_is_normalized_policy_target(self):
+        transitions = ActionSensitiveTransitions()
+        root = ModularMCTS(
+            transitions,
+            UniformPrior(),
+            RandomRolloutEvaluator(transitions, search_depth=6, seed=2),
+            simulations=80,
+            search_depth=6,
+            seed=2,
+        ).search(np.zeros(4, dtype=np.float32))
+        target = visit_distribution(root)
+        self.assertEqual(target.shape, (2,))
+        self.assertAlmostEqual(float(target.sum()), 1.0)
+        self.assertGreater(target[1], target[0])
+
+    def test_value_mcts_diagnostic_scores_value_implied_action(self):
+        action, scores, next_values, dones = value_implied_action(
+            ConstantValue(0.0),
+            RightBetterTransitions(),
+            np.zeros(4, dtype=np.float32),
+            search_depth=10,
+        )
+        self.assertEqual(action, 0)
+        self.assertEqual(dones, [False, False])
+        np.testing.assert_allclose(next_values, [0.0, 0.0])
+        np.testing.assert_allclose(scores, [0.1, 0.1])
+
+        class StateValue:
+            def value(self, state):
+                return float(state[0])
+
+        action, scores, _, _ = value_implied_action(
+            StateValue(),
+            RightBetterTransitions(),
+            np.zeros(4, dtype=np.float32),
+            search_depth=10,
+        )
+        self.assertEqual(action, 1)
+        self.assertGreater(scores[1], scores[0])
+
+    def test_value_mcts_diagnostic_summary_reports_confident_agreement(self):
+        records = [
+            {
+                "agreement": True,
+                "value_margin": 0.2,
+                "mcts_selected_visit_fraction": 0.8,
+                "mcts_action": 1,
+                "value_action": 1,
+            },
+            {
+                "agreement": False,
+                "value_margin": 0.1,
+                "mcts_selected_visit_fraction": 0.5,
+                "mcts_action": 0,
+                "value_action": 1,
+            },
+            {
+                "agreement": False,
+                "value_margin": 0.3,
+                "mcts_selected_visit_fraction": 0.75,
+                "mcts_action": 1,
+                "value_action": 0,
+            },
+        ]
+        summary = summarize_records(records)
+        self.assertEqual(summary["samples"], 3)
+        self.assertEqual(summary["wrong_action_count"], 2)
+        self.assertAlmostEqual(summary["agreement"], 1 / 3)
+        self.assertAlmostEqual(
+            summary["agreement_when_mcts_visit_fraction_at_least_0.70"],
+            0.5,
+        )
+
+    def test_value_mcts_diagnostic_can_store_high_confidence_records(self):
+        records = [
+            {"agreement": True, "mcts_selected_visit_fraction": 0.55},
+            {"agreement": False, "mcts_selected_visit_fraction": 0.8},
+            {"agreement": True, "mcts_selected_visit_fraction": 0.9},
+        ]
+        selected = select_records_to_store(
+            records,
+            limit=5,
+            mode="high-confidence",
+            confidence_threshold=0.7,
+        )
+        self.assertEqual(selected, records[1:])
+        selected = select_records_to_store(
+            records,
+            limit=5,
+            mode="high-confidence-disagreements",
+            confidence_threshold=0.7,
+        )
+        self.assertEqual(selected, [records[1]])
 
     def test_dataset_can_skip_value_targets_for_policy_or_dynamics_only(self):
         dataset = collect_state_dataset(
@@ -234,6 +405,36 @@ class StateMCTSTest(unittest.TestCase):
                 merged["dashboard_run_folders"],
                 disk_history["dashboard_run_folders"],
             )
+
+    def test_distillation_report_history_migrates_legacy_and_appends_runs(self):
+        legacy = {
+            "schema_version": 1,
+            "run_id": "old-distillation",
+            "selected_models": ["value"],
+            "evaluations": {"hybrid_mcts_value_distilled": {"mean_reward": 500.0}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mcts_distillation_report.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            history = load_distillation_report_history(path)
+            self.assertEqual(history["schema_version"], 2)
+            self.assertEqual(len(history["runs"]), 1)
+            self.assertEqual(history["runs"][0]["run_id"], "old-distillation")
+
+            history["runs"].append(
+                {
+                    "run_id": "new-distillation",
+                    "status": "completed",
+                    "selected_models": ["policy"],
+                    "evaluations": {"hybrid_mcts_policy_distilled": {"mean_reward": 450.0}},
+                }
+            )
+            write_distillation_report_history(path, history)
+            reloaded = load_distillation_report_history(path)
+            self.assertEqual(len(reloaded["runs"]), 2)
+            self.assertEqual(reloaded["runs"][0]["run_id"], "old-distillation")
+            self.assertEqual(reloaded["runs"][1]["run_id"], "new-distillation")
+            self.assertFalse(path.with_suffix(".json.tmp").exists())
 
     def test_all_three_trainers_run_independently_and_checkpoint(self):
         dataset = collect_state_dataset(samples=240, value_horizon=8, seed=3)

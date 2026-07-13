@@ -38,6 +38,14 @@ python -m state_mcts.experiment \
 python -m state_mcts.experiment --models dynamics --search-depth 40
 python -m state_mcts.experiment --models policy,value --search-depth 40
 
+# Delay learned value bootstrapping until after 10 simulated tree steps
+python -m state_mcts.experiment --models value --bootstrap-after 10
+
+# Sidecar diagnostic: train policy and/or value from vanilla-MCTS statistics
+python -m state_mcts.mcts_distillation --models policy
+python -m state_mcts.mcts_distillation --models value
+python -m state_mcts.mcts_distillation --models policy,value --bootstrap-after 10
+
 # Fast smoke run
 python -m state_mcts.experiment \
   --models all \
@@ -195,19 +203,127 @@ survival target. Validation reports mean absolute error on held-out episodes,
 while the loss graph records mean squared training error per epoch. A reused
 value checkpoint must have the same `--max-steps` target horizon.
 
-At an MCTS leaf, the network output is clipped to `[0, 1]`, converted back into
-predicted remaining steps, capped by the remaining tree depth, and normalized
-onto the MCTS search scale:
+At an MCTS leaf, the network output is clipped to `[0, 1]` and used directly as
+a broad state-quality estimate:
 
 ```text
-predicted_steps = clipped_value * max_steps
-leaf_value = min(predicted_steps, remaining_search_depth) / search_depth
+leaf_value = clipped_value
 ```
 
-This replaces the baseline random leaf rollout. Consequently,
-`--search-depth` affects where and how the prediction is consumed, but does not
-change value training targets. `--train-epochs` controls optimization passes
-for both policy and value and is independent of search depth.
+This replaces the baseline random leaf rollout. The important separation is:
+`--search-depth` decides the maximum MCTS tree depth, while the value network
+remains a general estimate of state quality over the configured episode
+horizon. `--bootstrap-after` optionally sets the minimum simulated tree depth
+before a learned value evaluator may be used. Its default is `0`, preserving
+the immediate-bootstrap behavior. For example, `--bootstrap-after 10` means MCTS
+must simulate at least ten CartPole transition steps before asking the value
+network for a leaf value, unless it reaches a terminal state earlier.
+`--search-depth` and `--bootstrap-after` do not change value training targets.
+`--train-epochs` controls optimization passes for both policy and value and is
+independent of search depth.
+
+## MCTS-teacher distillation
+
+`mcts_distillation.py` is the non-heuristic teacher path. It does not change the
+default heuristic-target training used by `state_mcts.experiment`; it is a
+separate diagnostic for asking whether policy and/or value can reproduce
+vanilla MCTS search statistics.
+
+The teacher is exact-dynamics vanilla MCTS with uniform priors and random leaf
+rollouts. During each teacher episode, every root search gives the policy
+target:
+
+```text
+policy_target = root child visits / total root child visits
+```
+
+The policy target is the soft visit distribution rather than only the most
+visited action, so the network learns how strongly MCTS preferred each action.
+
+The value target is the normalized discounted return-to-go from the rest of the
+completed teacher episode:
+
+```text
+value_target = (r_t + gamma r_{t+1} + gamma^2 r_{t+2} + ...)
+               /
+               (1 + gamma + gamma^2 + ... over value_horizon)
+```
+
+This is the intended AlphaZero-style split: the policy learns from search visit
+counts, while the value learns from what actually happened after the teacher
+acted from that state. For CartPole this is normalized future survival time.
+With `--discount 1.0`, a state with 250 future alive steps and
+`--value-horizon 500` gets target `0.5`; with `--discount 0.99`, near-term
+survival is weighted a bit more strongly.
+
+Toggle which network is trained and evaluated with `--models`:
+
+```bash
+python -m state_mcts.mcts_distillation --models policy
+python -m state_mcts.mcts_distillation --models value
+python -m state_mcts.mcts_distillation \
+  --models value \
+  --discount 0.99 \
+  --value-horizon 500
+python -m state_mcts.mcts_distillation \
+  --models policy,value \
+  --teacher-simulations 64 \
+  --search-depth 30 \
+  --bootstrap-after 10 \
+  --train-samples 10000
+```
+
+It writes separate policy/value checkpoints and appends each distillation run to
+its own report history:
+
+- `checkpoints/state_mcts/state_policy_mcts_teacher.pt`
+- `checkpoints/state_mcts/state_value_mcts_teacher.pt`
+- `artifacts/state_mcts/mcts_distillation_report.json`
+- selected model loss SVGs under `artifacts/state_mcts/losses/<run_id>/`
+
+The older visit-weighted tree-value target was intentionally removed from this
+path because it did not match how we want the value network to generalize as a
+leaf evaluator.
+
+## Value-vs-MCTS action diagnostic
+
+`value_mcts_diagnostic.py` checks whether the current value checkpoint agrees
+with vanilla MCTS on local action ordering. It regenerates teacher-MCTS states,
+runs a fresh root search, and compares:
+
+```text
+MCTS action  = root child with most visits
+value action = argmax_a reward(s, a) / search_depth + V(next_state(s, a))
+```
+
+Run it after a value distillation run:
+
+```bash
+python -m state_mcts.value_mcts_diagnostic \
+  --samples 500 \
+  --teacher-simulations 64 \
+  --search-depth 30 \
+  --seed 0
+```
+
+To keep mostly decisive examples in the raw JSON records while still computing
+summary metrics over all sampled states:
+
+```bash
+python -m state_mcts.value_mcts_diagnostic \
+  --samples 5000 \
+  --teacher-simulations 64 \
+  --search-depth 30 \
+  --seed 0 \
+  --store-records 100 \
+  --store-record-mode high-confidence \
+  --store-confidence-threshold 0.70
+```
+
+It appends to `artifacts/state_mcts/value_mcts_action_diagnostic.json`.
+Low agreement means the scalar value network may have learned reasonable global
+returns while still giving the wrong local left/right ordering that value-only
+MCTS needs for control.
 
 ## Run
 

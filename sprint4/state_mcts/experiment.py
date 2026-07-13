@@ -237,10 +237,12 @@ def new_report_run(args, selected):
             "expert_probability": args.expert_probability,
             "simulations": args.simulations,
             "search_depth": args.search_depth,
+            "bootstrap_after": args.bootstrap_after,
             "search_depth_controls": [
                 "MCTS tree lookahead",
                 "random leaf-rollout length",
                 "dynamics multi-step training horizon when dynamics is trained",
+                "minimum depth before learned value bootstrap when value is active",
             ],
             "value_target_horizon": args.max_steps,
             "eval_episodes": args.eval_episodes,
@@ -302,6 +304,7 @@ def build_mcts(
     search_depth,
     seed,
     value_horizon=500,
+    bootstrap_after=0,
 ):
     transitions = (
         LearnedCartPoleDynamics(models["dynamics"], exact_dynamics.is_terminal)
@@ -310,7 +313,7 @@ def build_mcts(
     )
     priors = NetworkPrior(models["policy"]) if "policy" in enabled else UniformPrior()
     evaluator = (
-        NetworkValueEvaluator(models["value"], search_depth, value_horizon)
+        NetworkValueEvaluator(models["value"], value_horizon)
         if "value" in enabled
         else RandomRolloutEvaluator(transitions, search_depth, seed=seed)
     )
@@ -320,6 +323,7 @@ def build_mcts(
         evaluator,
         simulations=simulations,
         search_depth=search_depth,
+        bootstrap_after=bootstrap_after,
         seed=seed,
     )
 
@@ -470,6 +474,8 @@ def train_selected(args, selected, device, run_id):
 
 
 def run(args):
+    if args.bootstrap_after < 0 or args.bootstrap_after > args.search_depth:
+        raise ValueError("--bootstrap-after must be between 0 and --search-depth")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -503,6 +509,7 @@ def run(args):
                 exact_dynamics,
                 simulations=args.simulations,
                 search_depth=args.search_depth,
+                bootstrap_after=args.bootstrap_after,
                 seed=args.seed + 10_000 * index,
                 value_horizon=args.max_steps,
             )
@@ -561,6 +568,15 @@ def parse_args(argv=None):
         help=(
             "Global MCTS lookahead depth. Also sets dynamics multi-step training "
             "horizon when dynamics is trained; does not change policy or value targets."
+        ),
+    )
+    parser.add_argument(
+        "--bootstrap-after",
+        type=int,
+        default=0,
+        help=(
+            "Minimum simulated tree depth before a learned value leaf evaluator "
+            "may bootstrap. Default 0 preserves the current immediate-bootstrap behavior."
         ),
     )
     parser.add_argument("--eval-episodes", type=int, default=10)
