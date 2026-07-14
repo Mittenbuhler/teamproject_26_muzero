@@ -2,5 +2,15 @@
 __pycache__/
 *.py[cod]
 .DS_Store
-artifacts/
-checkpoints/
+artifacts/*
+!artifacts/state_mcts/
+artifacts/state_mcts/*
+!artifacts/state_mcts/1initial_difference.png
+!artifacts/state_mcts/2value_only_old,old+bs.png
+!artifacts/state_mcts/3value_only_old,old+bs,discountedReturn.png
+!artifacts/state_mcts/4value_only_old,old+bs,dR,dR+bs.png
+!artifacts/state_mcts/5value_only_allDiscRet_bsAfterX.png
+!artifacts/state_mcts/6value_only_allDiscRet_bsAfterY.png
+checkpoints/*
+!checkpoints/state_mcts/
+!checkpoints/state_mcts/**
