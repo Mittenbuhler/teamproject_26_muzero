@@ -1,10 +1,10 @@
 """Train optional vector-state models and evaluate their MCTS substitutions.
 
 Examples:
-    python -m state_mcts.experiment --models none
-    python -m state_mcts.experiment --models value
-    python -m state_mcts.experiment --models policy,dynamics
-    python -m state_mcts.experiment --models all --ablation
+    python -m state_mcts.run_state_mcts_experiment --models none
+    python -m state_mcts.run_state_mcts_experiment --models value
+    python -m state_mcts.run_state_mcts_experiment --models policy,dynamics
+    python -m state_mcts.run_state_mcts_experiment --models all --ablation
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from .search import (
+from .mcts_search import (
     ExactCartPoleDynamics,
     LearnedCartPoleDynamics,
     ModularMCTS,
@@ -31,7 +31,7 @@ from .search import (
     UniformPrior,
     select_mcts_action,
 )
-from .training import (
+from .train_policy_value_dynamic_from_data import (
     collect_state_dataset,
     dynamics_curriculum,
     load_component,

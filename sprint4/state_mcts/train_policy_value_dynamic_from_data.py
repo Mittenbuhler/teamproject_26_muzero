@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from .models import DynamicsModel, PolicyNetwork, ValueNetwork
-from .search import ExactCartPoleDynamics
+from .mcts_search import ExactCartPoleDynamics
 
 
 @dataclass

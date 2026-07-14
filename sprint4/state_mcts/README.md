@@ -6,27 +6,27 @@ Run these commands from `teamproject_26_muzero/sprint4`:
 
 ```bash
 # Show every CLI option
-python -m state_mcts.experiment --help
+python -m state_mcts.run_state_mcts_experiment --help
 
 # Exact-dynamics MCTS baseline: UCT + random rollouts
-python -m state_mcts.experiment --models none
+python -m state_mcts.run_state_mcts_experiment --models none
 
 # Train and evaluate exactly one learned component
-python -m state_mcts.experiment --models dynamics
-python -m state_mcts.experiment --models policy
-python -m state_mcts.experiment --models value
+python -m state_mcts.run_state_mcts_experiment --models dynamics
+python -m state_mcts.run_state_mcts_experiment --models policy
+python -m state_mcts.run_state_mcts_experiment --models value
 
 # Train all components and evaluate only the complete system
-python -m state_mcts.experiment --models all
+python -m state_mcts.run_state_mcts_experiment --models all
 
 # Train all components and evaluate all eight component combinations
-python -m state_mcts.experiment --models all --ablation
+python -m state_mcts.run_state_mcts_experiment --models all --ablation
 
 # Re-evaluate compatible existing checkpoints without retraining
-python -m state_mcts.experiment --models all --ablation --reuse-checkpoints
+python -m state_mcts.run_state_mcts_experiment --models all --ablation --reuse-checkpoints
 
 # More reliable evaluation using fixed seeds and a separate report path
-python -m state_mcts.experiment \
+python -m state_mcts.run_state_mcts_experiment \
   --models all \
   --ablation \
   --eval-episodes 50 \
@@ -35,19 +35,19 @@ python -m state_mcts.experiment \
 
 # Change the global MCTS lookahead for any model combination. When dynamics is
 # trained, its multi-step horizon automatically uses the same value.
-python -m state_mcts.experiment --models dynamics --search-depth 40
-python -m state_mcts.experiment --models policy,value --search-depth 40
+python -m state_mcts.run_state_mcts_experiment --models dynamics --search-depth 40
+python -m state_mcts.run_state_mcts_experiment --models policy,value --search-depth 40
 
 # Delay learned value bootstrapping until after 10 simulated tree steps
-python -m state_mcts.experiment --models value --bootstrap-after 10
+python -m state_mcts.run_state_mcts_experiment --models value --bootstrap-after 10
 
 # Sidecar diagnostic: train policy and/or value from vanilla-MCTS statistics
-python -m state_mcts.mcts_distillation --models policy
-python -m state_mcts.mcts_distillation --models value
-python -m state_mcts.mcts_distillation --models policy,value --bootstrap-after 10
+python -m state_mcts.train_policy_value_from_mcts --models policy
+python -m state_mcts.train_policy_value_from_mcts --models value
+python -m state_mcts.train_policy_value_from_mcts --models policy,value --bootstrap-after 10
 
 # Fast smoke run
-python -m state_mcts.experiment \
+python -m state_mcts.run_state_mcts_experiment \
   --models all \
   --train-samples 1000 \
   --train-epochs 5 \
@@ -224,8 +224,8 @@ independent of search depth.
 
 ## MCTS-teacher distillation
 
-`mcts_distillation.py` is the non-heuristic teacher path. It does not change the
-default heuristic-target training used by `state_mcts.experiment`; it is a
+`train_policy_value_from_mcts.py` is the non-heuristic teacher path. It does not change the
+default heuristic-target training used by `state_mcts.run_state_mcts_experiment`; it is a
 separate diagnostic for asking whether policy and/or value can reproduce
 vanilla MCTS search statistics.
 
@@ -259,13 +259,13 @@ survival is weighted a bit more strongly.
 Toggle which network is trained and evaluated with `--models`:
 
 ```bash
-python -m state_mcts.mcts_distillation --models policy
-python -m state_mcts.mcts_distillation --models value
-python -m state_mcts.mcts_distillation \
+python -m state_mcts.train_policy_value_from_mcts --models policy
+python -m state_mcts.train_policy_value_from_mcts --models value
+python -m state_mcts.train_policy_value_from_mcts \
   --models value \
   --discount 0.99 \
   --value-horizon 500
-python -m state_mcts.mcts_distillation \
+python -m state_mcts.train_policy_value_from_mcts \
   --models policy,value \
   --teacher-simulations 64 \
   --search-depth 30 \
@@ -278,7 +278,7 @@ its own report history:
 
 - `checkpoints/state_mcts/state_policy_mcts_teacher.pt`
 - `checkpoints/state_mcts/state_value_mcts_teacher.pt`
-- `artifacts/state_mcts/mcts_distillation_report.json`
+- `artifacts/state_mcts/state_mcts_value_only_report.json`
 - selected model loss SVGs under `artifacts/state_mcts/losses/<run_id>/`
 
 The older visit-weighted tree-value target was intentionally removed from this
@@ -287,7 +287,7 @@ leaf evaluator.
 
 ## Value-vs-MCTS action diagnostic
 
-`value_mcts_diagnostic.py` checks whether the current value checkpoint agrees
+`diagnose_value_action_alignment.py` checks whether the current value checkpoint agrees
 with vanilla MCTS on local action ordering. It regenerates teacher-MCTS states,
 runs a fresh root search, and compares:
 
@@ -299,7 +299,7 @@ value action = argmax_a reward(s, a) / search_depth + V(next_state(s, a))
 Run it after a value distillation run:
 
 ```bash
-python -m state_mcts.value_mcts_diagnostic \
+python -m state_mcts.diagnose_value_action_alignment \
   --samples 500 \
   --teacher-simulations 64 \
   --search-depth 30 \
@@ -310,7 +310,7 @@ To keep mostly decisive examples in the raw JSON records while still computing
 summary metrics over all sampled states:
 
 ```bash
-python -m state_mcts.value_mcts_diagnostic \
+python -m state_mcts.diagnose_value_action_alignment \
   --samples 5000 \
   --teacher-simulations 64 \
   --search-depth 30 \
@@ -330,11 +330,11 @@ MCTS needs for control.
 From this directory:
 
 ```bash
-python -m state_mcts.experiment --models none
-python -m state_mcts.experiment --models dynamics
-python -m state_mcts.experiment --models policy
-python -m state_mcts.experiment --models value
-python -m state_mcts.experiment --models all --ablation
+python -m state_mcts.run_state_mcts_experiment --models none
+python -m state_mcts.run_state_mcts_experiment --models dynamics
+python -m state_mcts.run_state_mcts_experiment --models policy
+python -m state_mcts.run_state_mcts_experiment --models value
+python -m state_mcts.run_state_mcts_experiment --models all --ablation
 ```
 
 `--models all --ablation` trains each model once and evaluates all eight model
@@ -363,7 +363,7 @@ curve is unavailable.
 For a quick smoke test:
 
 ```bash
-python -m state_mcts.experiment \
+python -m state_mcts.run_state_mcts_experiment \
   --models all \
   --ablation \
   --train-samples 1000 \

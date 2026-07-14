@@ -7,7 +7,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from state_mcts.experiment import (
+from state_mcts.run_state_mcts_experiment import (
     build_mcts,
     component_configurations,
     load_report_history,
@@ -15,7 +15,7 @@ from state_mcts.experiment import (
     write_loss_graph,
     write_report_history,
 )
-from state_mcts.mcts_distillation import (
+from state_mcts.train_policy_value_from_mcts import (
     discounted_return_normalizer,
     discounted_return_targets,
     load_report_history as load_distillation_report_history,
@@ -23,7 +23,7 @@ from state_mcts.mcts_distillation import (
     visit_distribution,
     write_report_history as write_distillation_report_history,
 )
-from state_mcts.search import (
+from state_mcts.mcts_search import (
     ExactCartPoleDynamics,
     LearnedCartPoleDynamics,
     ModularMCTS,
@@ -32,7 +32,7 @@ from state_mcts.search import (
     UniformPrior,
     select_mcts_action,
 )
-from state_mcts.training import (
+from state_mcts.train_policy_value_dynamic_from_data import (
     collect_state_dataset,
     curriculum_horizon,
     dynamics_curriculum,
@@ -42,7 +42,7 @@ from state_mcts.training import (
     train_policy,
     train_value,
 )
-from state_mcts.value_mcts_diagnostic import (
+from state_mcts.diagnose_value_action_alignment import (
     select_records_to_store,
     summarize_records,
     value_implied_action,
@@ -414,7 +414,7 @@ class StateMCTSTest(unittest.TestCase):
             "evaluations": {"hybrid_mcts_value_distilled": {"mean_reward": 500.0}},
         }
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "mcts_distillation_report.json"
+            path = Path(directory) / "state_mcts_value_only_report.json"
             path.write_text(json.dumps(legacy), encoding="utf-8")
             history = load_distillation_report_history(path)
             self.assertEqual(history["schema_version"], 2)

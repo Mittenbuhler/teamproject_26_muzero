@@ -21,9 +21,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from .mcts_distillation import make_teacher_mcts, selected_visit_fraction, visit_distribution
-from .search import ExactCartPoleDynamics, select_mcts_action
-from .training import load_component
+from .train_policy_value_from_mcts import make_teacher_mcts, selected_visit_fraction, visit_distribution
+from .mcts_search import ExactCartPoleDynamics, select_mcts_action
+from .train_policy_value_dynamic_from_data import load_component
 
 
 REPORT_SCHEMA_VERSION = 1

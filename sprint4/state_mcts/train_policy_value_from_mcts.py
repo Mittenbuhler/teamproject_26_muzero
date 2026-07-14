@@ -26,9 +26,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .experiment import evaluate_agent, write_loss_graph
+from .run_state_mcts_experiment import evaluate_agent, write_loss_graph
 from .models import PolicyNetwork
-from .search import (
+from .mcts_search import (
     ExactCartPoleDynamics,
     ModularMCTS,
     NetworkPrior,
@@ -37,7 +37,7 @@ from .search import (
     UniformPrior,
     select_mcts_action,
 )
-from .training import StateDataset, _batches, _tensor, save_component, train_value
+from .train_policy_value_dynamic_from_data import StateDataset, _batches, _tensor, save_component, train_value
 
 
 COMPONENTS = ("policy", "value")
@@ -683,7 +683,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--report-path",
-        default="artifacts/state_mcts/mcts_distillation_report.json",
+        default="artifacts/state_mcts/state_mcts_value_only_report.json",
     )
     parser.add_argument(
         "--loss-dir",
