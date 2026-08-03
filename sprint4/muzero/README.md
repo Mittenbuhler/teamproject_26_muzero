@@ -82,6 +82,105 @@ Run from `teamproject_26_muzero/sprint4` with the project virtual environment. U
 
 `--episodes` means additional episodes when `--reuse-checkpoint` is present. Resume reads `latest.pt` and restores networks, optimizer, replay, histories, episode count, and random-number states. Architecture, game/action variant, observation history, discount, and reward scale are validated before training continues.
 
+## Training parameter reference
+
+Invoke training as `../../.venv/bin/python -m muzero.train [OPTIONS]`. The defaults below are the values used when an option is omitted.
+
+### Run, environment, and output
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--game GAME`, `--env GAME` | `breakout` | MinAtar short name or full environment ID. Short names select v1, for example `breakout` becomes `MinAtar/Breakout-v1`; use a full v0 ID explicitly when needed. |
+| `--episodes N` | `10` | Number of episodes to train. With `--reuse-checkpoint`, this is the number of **additional** episodes. Must be positive. |
+| `--max-steps N` | `2500` | Maximum environment transitions per training or evaluation episode. Reaching the limit truncates the episode. Must be positive. |
+| `--seed N` | `0` | Base seed for Python, NumPy, PyTorch, the action space, and per-episode environment resets. |
+| `--sticky-action-prob P` | `0.1` | MinAtar probability of repeating the previous action instead of applying the selected action. Must be in `[0, 1]`. |
+| `--no-difficulty-ramping` | off | Disable MinAtar's built-in difficulty ramping. Ramping is enabled unless this flag is present. |
+| `--checkpoint-path PATH` | `checkpoints/muzero/<game>/best.pt` | Path for the best evaluation checkpoint. Companion `latest` and `final` checkpoint names are derived from this path. |
+| `--reward-plot-path PATH` | `artifacts/muzero/training/<game>/rewards.png` | Destination for the training/evaluation reward plot written when training finishes. |
+| `--reuse-checkpoint` | off | Resume the full actor/learner state. Resolution order is the companion `latest` checkpoint, then `final`, then the specified best-checkpoint path. |
+
+### Model, replay, and learner
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--history-length N` | `1` | Number of consecutive native observations concatenated along the channel axis. Changing it changes the architecture and requires a fresh checkpoint. Must be positive. |
+| `--latent-channels N` | `32` | Channel width of the latent representation and the small dynamics/prediction networks. Must be positive. |
+| `--batch-size N` | `32` | Replay transitions sampled per learner update, capped by the number currently available. Must be positive. |
+| `--buffer-capacity N` | `20000` | Nominal transition capacity of the replay buffer. It evicts whole old episodes and always retains at least one complete episode, even if that episode exceeds the limit. Must be positive. |
+| `--warmup-episodes N` | `1` | Initial episodes that use random actions and mask the policy loss. Value, reward, representation, and dynamics learning remain active. May be zero. |
+| `--updates-per-episode N` | `5` | Fixed learner updates after each episode. Used only when `--updates-per-transition` is `0` or less. May be zero. |
+| `--updates-per-transition RATE` | `0.0` | If positive, replace the fixed schedule with `ceil(episode_steps * RATE)` learner updates. |
+| `--min-updates-per-episode N` | `1` | Lower clamp for transition-relative updates. Used only with a positive `--updates-per-transition`; may be zero. |
+| `--max-updates-per-episode N` | `50` | Upper clamp for transition-relative updates. Must be positive and at least the minimum. |
+| `--learning-rate RATE` | `0.0003` | Adam learning rate. Must be positive. A supplied value overrides the saved optimizer rate when resuming. |
+| `--weight-decay RATE` | `0.00001` | Adam weight decay. Must be nonnegative and overrides the saved value when resuming. |
+| `--gradient-clip-norm VALUE` | `5.0` | Maximum global gradient norm before the optimizer step. Must be positive. |
+| `--dynamics-gradient-scale SCALE` | `0.5` | Multiplier applied to gradients passed backward through each recurrent dynamics state. Must be in `[0, 1]`. |
+
+### Targets and losses
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--discount GAMMA` | `0.997` | Discount used for value targets and MCTS backups. Must be in `[0, 1]` and cannot change while resuming replay. |
+| `--bootstrap-steps N` | `10` | Number of rewards in each n-step value target before bootstrapping from the stored MCTS root value. Must be positive. |
+| `--unroll-steps N` | `5` | Number of recorded actions through which the dynamics model is recurrently unrolled during one learner update. Must be positive. |
+| `--reward-scale SCALE` | `1.0` | Multiplier applied to rewards and value targets used by the model. Must be positive and cannot change while resuming replay. Reported episode scores remain unscaled. |
+| `--policy-loss-weight VALUE` | `1.0` | Weight of policy cross-entropy in the total loss. Must be nonnegative. |
+| `--value-loss-weight VALUE` | `1.0` | Weight of scalar value MSE in the total loss. Must be nonnegative. |
+| `--reward-loss-weight VALUE` | `1.0` | Weight of scalar reward MSE in the total loss. Must be nonnegative. |
+
+At least one of the three loss weights must be greater than zero.
+
+### MCTS and self-play exploration
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--simulations N` | `25` | MCTS simulations per environment decision. More simulations cost more model inference. Must be positive. |
+| `--pb-c-base VALUE` | `19652` | Base constant in the PUCT exploration coefficient. Must be positive. |
+| `--pb-c-init VALUE` | `1.25` | Initial constant in the PUCT exploration coefficient. Must be positive. |
+| `--root-dirichlet-alpha ALPHA` | `0.25` | Dirichlet concentration used to generate root prior noise during self-play. Must be positive. |
+| `--root-exploration-fraction P` | `0.25` | Fraction of the root prior replaced by Dirichlet noise during self-play. Must be in `[0, 1]`. Evaluation never adds root noise. |
+| `--temperature-initial T` | `1.0` | Visit-count action-sampling temperature before the first temperature boundary. Must be nonnegative. |
+| `--temperature-middle T` | `0.5` | Temperature between the two episode boundaries. Must be nonnegative. |
+| `--temperature-final T` | `0.25` | Temperature at and after the second episode boundary. Must be nonnegative. |
+| `--temperature-initial-episodes N` | `200` | Use the initial temperature while the zero-based global episode index is below `N`. May be zero. |
+| `--temperature-middle-episodes N` | `500` | Switch from middle to final temperature at this zero-based global episode index. Must be at least `--temperature-initial-episodes`. |
+
+Temperature boundaries use the total completed episode count, including episodes restored by `--reuse-checkpoint`. A temperature of zero chooses the most-visited action instead of sampling.
+
+### Evaluation
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--evaluation-interval N` | `10` | Run deterministic, noise-free MCTS evaluation every `N` completed episodes. The final episode is always evaluated. Must be positive. |
+| `--evaluation-episodes N` | `3` | Number of episodes in each evaluation; their mean score determines whether `best.pt` is replaced. Must be positive. |
+
+`-h` or `--help` prints the current command-line interface.
+
+## Diagnostic and GIF parameter reference
+
+Invoke diagnostics as `../../.venv/bin/python -m muzero.diagnose CHECKPOINT [OPTIONS]`, or omit the positional checkpoint and supply `--checkpoint PATH` instead. Diagnostics run on CPU and compare raw-policy argmax play with noise-free MCTS play on identical seeds.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `CHECKPOINT` | required unless `--checkpoint` is used | Positional path to a native MinAtar MuZero checkpoint. |
+| `--checkpoint PATH` | none | Named alternative to the positional checkpoint path. If both are supplied, this option takes precedence. |
+| `--game GAME` | checkpoint metadata | Override the game name or verify it against the environment ID stored in the checkpoint. |
+| `--replay PATH` | embedded checkpoint replay | Optional `torch.save`d `EpisodeReplayBuffer` used for policy-search and unroll diagnostics. If omitted, embedded replay is used when present; otherwise diagnostics use a blank root and omit unroll metrics. |
+| `--simulations N` | `25` | MCTS simulations per evaluated or recorded decision. |
+| `--episodes N` | `5` | Number of raw-policy and MCTS evaluation episodes. Both modes use the same seeds. |
+| `--seed N` | `0` | First evaluation seed; subsequent episodes use `N+1`, `N+2`, and so on. Also supplies the GIF seed unless `--gif-seed` is set. |
+| `--record-gif PATH` | none | Record one real-environment episode to this GIF. Parent directories are created automatically. |
+| `--gif-mode {mcts,raw}` | `mcts` | Choose actions using noise-free MCTS visit counts or the prediction network's raw-policy argmax. |
+| `--gif-seed N` | `--seed` | Environment and action-space seed for the recorded episode. |
+| `--gif-max-steps N` | checkpoint training limit | Maximum recorded transitions. Falls back to `2500` for a checkpoint without a stored training limit. Must be positive. |
+| `--gif-fps N` | `20` | GIF playback frame rate. Must be positive. |
+| `--gif-width PIXELS` | `480` | Width of the RGB gameplay pane. The native model-input panel is added beside it, so the complete GIF is wider. Must be positive. |
+| `--output-json PATH` | none | Save the same diagnostic report printed to standard output as formatted JSON. Parent directories are created automatically. |
+
+GIF-only options have no effect unless `--record-gif` is supplied. `-h` or `--help` prints the current diagnostic interface.
+
 ## Output layout
 
 ```text
