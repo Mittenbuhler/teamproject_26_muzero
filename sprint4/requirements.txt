@@ -1,6 +1,7 @@
 gymnasium[classic-control]
 imageio
 matplotlib
+minatar==1.0.15
 numpy
 pillow
 torch

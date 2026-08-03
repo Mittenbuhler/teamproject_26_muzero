@@ -23,8 +23,8 @@ class ResidualBlock(nn.Module):
         return F.relu(x + self.conv2(F.relu(self.conv1(x))))
 
 
-class ImageRepresentationNetwork(nn.Module):
-    """h: a real image history [B,C,H,W] -> a spatial latent state."""
+class RepresentationNetwork(nn.Module):
+    """h: a real native observation history [B,C,H,W] -> spatial latent."""
     def __init__(self, input_channels=5, latent_channels=32, observation_shape=(32, 32)):
         super().__init__()
         self.input_channels = int(input_channels)
@@ -177,3 +177,8 @@ class ValueNetwork(PredictionNetwork):
         x = torch.as_tensor(state, dtype=torch.float32, device=device)
         if x.ndim == 3: x = x.unsqueeze(0)
         return float(self(x).item())
+
+
+# The legacy package used this name; retaining it avoids needless downstream
+# breakage while the native package exposes the environment-neutral class name.
+ImageRepresentationNetwork = RepresentationNetwork

@@ -1,175 +1,112 @@
-import random
-
+"""Vanilla latent MuZero MCTS: one recurrent inference per simulation."""
+import math
 import numpy as np
 
 
+class MinMaxStats:
+    def __init__(self): self.minimum, self.maximum = float("inf"), float("-inf")
+    def update(self, value): self.minimum=min(self.minimum,value); self.maximum=max(self.maximum,value)
+    def normalize(self, value):
+        if self.maximum > self.minimum: return (value-self.minimum)/(self.maximum-self.minimum)
+        return value
+
+
 class MCTSNode:
-    """Model-based MCTS node over latent states, with no environment cloning."""
-
-    def __init__(
-        self,
-        state,
-        parent=None,
-        action=None,
-        reward=0.0,
-        done=False,
-        prior=1.0,
-        action_dim=2,
-        terminal_fn=None,
-        depth=0,
-    ):
-        self.state = np.asarray(state, dtype=np.float32)
-        self.parent = parent
-        self.action = action
-        self.reward = float(reward)
-        self.done = bool(done)
-        self.prior = float(prior)
-        self.action_dim = action_dim
-        self.terminal_fn = terminal_fn
-        self.depth = depth
-
-        self.children = {}
-        self.visit_count = 0
-        self.value_sum = 0.0
-
+    def __init__(self, prior=0.0, state=None, reward=0.0, parent=None, action=None):
+        self.prior=float(prior); self.state=state; self.reward=float(reward)
+        self.parent=parent; self.action=action; self.children={}; self.visit_count=0; self.value_sum=0.0
     @property
-    def mean_value(self):
-        if self.visit_count == 0:
-            return 0.0
-        return self.value_sum / self.visit_count
-
-    def is_expanded(self):
-        return bool(self.children)
+    def mean_value(self): return self.value_sum/self.visit_count if self.visit_count else 0.0
+    # Paper notation, kept as properties so diagnostics can inspect P/N/W/Q/R.
+    P=property(lambda self:self.prior)
+    N=property(lambda self:self.visit_count)
+    W=property(lambda self:self.value_sum)
+    Q=property(lambda self:self.mean_value)
+    R=property(lambda self:self.reward)
+    latent_state=property(lambda self:self.state)
+    def expanded(self): return bool(self.children)
 
 
 class ModelBasedMCTS:
-    """
-    MCTS where:
-      - selection uses visit statistics and policy priors
-      - expansion uses the learned dynamics model
-      - the value NN evaluates newly reached leaf states
-    """
+    def __init__(self, dynamics_model, prediction_network=None, action_dim=None, simulations=50,
+                 discount=0.997, pb_c_base=19652, pb_c_init=1.25, root_dirichlet_alpha=0.25,
+                 root_exploration_fraction=0.25, policy_network=None, value_network=None):
+        if action_dim is None or int(action_dim) <= 0:
+            raise ValueError("action_dim must be positive")
+        if int(simulations) <= 0:
+            raise ValueError("simulations must be positive")
+        if not 0 <= float(discount) <= 1:
+            raise ValueError("discount must be in [0, 1]")
+        if float(pb_c_base) <= 0 or float(pb_c_init) <= 0:
+            raise ValueError("PUCT parameters must be positive")
+        if float(root_dirichlet_alpha) <= 0:
+            raise ValueError("root_dirichlet_alpha must be positive")
+        if not 0 <= float(root_exploration_fraction) <= 1:
+            raise ValueError("root_exploration_fraction must be in [0, 1]")
+        self.dynamics_model=dynamics_model
+        self.prediction_network=prediction_network
+        self.policy_network=policy_network; self.value_network=value_network
+        self.action_dim=int(action_dim); self.simulations=int(simulations); self.discount=float(discount)
+        self.pb_c_base=float(pb_c_base); self.pb_c_init=float(pb_c_init)
+        self.root_dirichlet_alpha=float(root_dirichlet_alpha); self.root_exploration_fraction=float(root_exploration_fraction)
+        self.expansions_last_search=0
 
-    def __init__(
-        self,
-        dynamics_model,
-        policy_network,
-        value_network,
-        action_dim,
-        terminal_fn,
-        simulations=60,
-        discount=0.997,
-        exploration_c=1.4,
-        reward_scale=1.0,
-    ):
-        self.dynamics_model = dynamics_model
-        self.policy_network = policy_network
-        self.value_network = value_network
-        self.action_dim = action_dim
-        self.terminal_fn = terminal_fn
-        self.simulations = simulations
-        self.discount = discount
-        self.exploration_c = exploration_c
-        self.reward_scale = reward_scale
+    def _predict(self,state):
+        if self.prediction_network is not None: return self.prediction_network.predict(state)
+        return self.policy_network.action_probs(state), self.value_network.value(state)
 
-    def search(self, root_state):
-        root = MCTSNode(
-            root_state,
-            action_dim=self.action_dim,
-            terminal_fn=self.terminal_fn,
-        )
-        self.expand(root)
+    def _expand_priors(self,node,priors):
+        priors=np.asarray(priors,dtype=np.float64); priors=priors/priors.sum()
+        for action in range(self.action_dim): node.children[action]=MCTSNode(prior=priors[action],parent=node,action=action)
 
+    def search(self, root_state, add_exploration_noise=False):
+        priors, root_value=self._predict(root_state)
+        root=MCTSNode(state=np.asarray(root_state,np.float32)); self._expand_priors(root,priors)
+        if add_exploration_noise:
+            noise=np.random.dirichlet([self.root_dirichlet_alpha]*self.action_dim)
+            for a,child in root.children.items():
+                child.prior=(1-self.root_exploration_fraction)*child.prior+self.root_exploration_fraction*noise[a]
+        stats=MinMaxStats(); self.expansions_last_search=0
         for _ in range(self.simulations):
-            node = root
-            path = [node]
-
-            while node.is_expanded() and not node.done:
-                node = self.select_child(node)
-                path.append(node)
-
-            if not node.done:
-                self.expand(node)
-
-            leaf_value = self.evaluate_leaf(node)
-            self.backpropagate(path, leaf_value)
-
+            node=root; path=[root]
+            while node.expanded():
+                _,node=self._select(node,stats); path.append(node)
+                if node.state is None: break
+            if node.state is None:
+                node.state,node.reward=self.dynamics_model.predict(node.parent.state,node.action)
+                leaf_priors,leaf_value=self._predict(node.state); self._expand_priors(node,leaf_priors)
+                self.expansions_last_search+=1
+            else: leaf_value=root_value
+            self._backup(path,float(leaf_value),stats)
         return root
 
-    def select_child(self, node):
-        parent_visits = max(node.visit_count, 1)
+    def _select(self,node,stats):
+        best=[]; best_score=-float("inf")
+        for action,child in node.children.items():
+            pb_c=(math.log((node.visit_count+self.pb_c_base+1)/self.pb_c_base)+self.pb_c_init)
+            pb_c*=math.sqrt(max(node.visit_count,1))/(child.visit_count+1)
+            q=child.reward+self.discount*child.mean_value if child.visit_count else 0.0
+            score=stats.normalize(q)+pb_c*child.prior
+            if score>best_score+1e-12: best=[(action,child)]; best_score=score
+            elif abs(score-best_score)<=1e-12: best.append((action,child))
+        return best[np.random.randint(len(best))]
 
-        def score(child):
-            q_score = child.reward + self.discount * child.mean_value
-            prior_score = (
-                self.exploration_c
-                * child.prior
-                * np.sqrt(parent_visits)
-                / (1 + child.visit_count)
-            )
-            return q_score + prior_score
-
-        max_score = max(score(child) for child in node.children.values())
-        best_actions = [
-            action for action, child in node.children.items()
-            if score(child) == max_score
-        ]
-        return node.children[random.choice(best_actions)]
-
-    def expand(self, node):
-        if node.done:
-            return
-
-        priors = self.policy_network.action_probs(node.state)
-        for action in range(self.action_dim):
-            next_state, reward = self.dynamics_model.predict(
-                node.state,
-                action,
-            )
-            done = self.terminal_fn(next_state)
-            reward *= self.reward_scale
-            child = MCTSNode(
-                next_state,
-                parent=node,
-                action=action,
-                reward=reward,
-                done=done,
-                prior=float(priors[action]),
-                action_dim=self.action_dim,
-                terminal_fn=self.terminal_fn,
-                depth=node.depth + 1,
-            )
-            node.children[action] = child
-
-    def evaluate_leaf(self, node):
-        if node.done:
-            return 0.0
-        return float(self.value_network.value(node.state))
-
-    def backpropagate(self, path, value):
+    def _backup(self,path,value,stats):
         for node in reversed(path):
-            node.visit_count += 1
-            node.value_sum += value
-            value = node.reward + self.discount * value
+            node.value_sum+=value; node.visit_count+=1
+            if node.parent is not None:
+                value=node.reward+self.discount*value; stats.update(value)
 
 
-def visit_count_policy(root, temperature=1.0):
-    counts = np.asarray(
-        [root.children[action].visit_count for action in range(root.action_dim)],
-        dtype=np.float32,
-    )
-    if counts.sum() <= 0:
-        return np.ones(root.action_dim, dtype=np.float32) / root.action_dim
-    if temperature <= 0:
-        policy = np.zeros(root.action_dim, dtype=np.float32)
-        policy[int(np.argmax(counts))] = 1.0
-        return policy
-    counts = counts ** (1.0 / temperature)
-    return counts / counts.sum()
+def visit_count_policy(root,temperature=1.0):
+    counts=np.asarray([root.children[a].visit_count for a in range(len(root.children))],np.float64)
+    if counts.sum()==0: return np.ones(len(counts),np.float32)/len(counts)
+    if temperature<=0:
+        p=np.zeros(len(counts),np.float32); p[int(np.argmax(counts))]=1; return p
+    counts=counts**(1/temperature); return (counts/counts.sum()).astype(np.float32)
 
 
-def select_action(root, temperature=0.0):
-    policy = visit_count_policy(root, temperature=temperature)
-    if temperature <= 0:
-        return int(np.argmax(policy)), policy
-    return int(np.random.choice(len(policy), p=policy)), policy
+def select_action(root,temperature=0.0):
+    policy=visit_count_policy(root,temperature)
+    action=int(np.argmax(policy)) if temperature<=0 else int(np.random.choice(len(policy),p=policy))
+    return action,policy

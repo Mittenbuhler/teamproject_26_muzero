@@ -1,14 +1,15 @@
-"""A deliberately small, configurable actor/learner implementation of MuZero."""
+"""A deliberately small, configurable native-MinAtar MuZero trainer."""
 import argparse
 import math
 import os
 import random
+import re
 import tempfile
 from pathlib import Path
 
 os.environ.setdefault(
     "MPLCONFIGDIR",
-    os.path.join(tempfile.gettempdir(), "legacy_muzero_matplotlib"),
+    os.path.join(tempfile.gettempdir(), "minatar_muzero_matplotlib"),
 )
 import matplotlib
 
@@ -18,14 +19,30 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .buffers import LatentReplayBuffer
-from .image_observation import FrameStack, ScreenshotConfig, make_image_env
+from .buffers import EpisodeReplayBuffer
+from .environment import ObservationHistory, make_minatar_env, minatar_env_id
 from .mcts import ModelBasedMCTS, select_action, visit_count_policy
-from .models import DynamicsModel, ImageRepresentationNetwork, PredictionNetwork
+from .models import DynamicsModel, PredictionNetwork, RepresentationNetwork
 
-CHECKPOINT_VERSION = 14
+CHECKPOINT_VERSION = 1
+CHECKPOINT_FORMAT = "native_minatar_vanilla_muzero"
 POLICY_TARGET_MODE = "raw_visit_counts"
 WARMUP_POLICY_MODE = "masked_policy_with_active_model_learning"
+
+
+def _game_slug(game):
+    variant = minatar_env_id(game).split("/", 1)[1]
+    base, version = variant.rsplit("-", 1)
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", base).lower()
+    return snake if version.lower() == "v1" else f"{snake}-{version.lower()}"
+
+
+def default_checkpoint_path(game):
+    return Path("checkpoints") / "muzero" / _game_slug(game) / "best.pt"
+
+
+def default_reward_plot_path(game):
+    return Path("artifacts") / "muzero" / "training" / _game_slug(game) / "rewards.png"
 
 
 def save_reward_plot(history, path, moving_average_window=10):
@@ -260,8 +277,37 @@ def make_latent_mcts(
     )
 
 
+def build_networks(input_shape, action_dim, latent_channels=32, device=None):
+    """Construct h, g and f from a runtime-derived CHW input shape."""
+    input_shape = tuple(int(size) for size in input_shape)
+    if len(input_shape) != 3 or any(size <= 0 for size in input_shape):
+        raise ValueError("input_shape must be positive (channels, height, width)")
+    if int(action_dim) <= 0:
+        raise ValueError("action_dim must be positive")
+    device = device or torch.device("cpu")
+    input_channels, height, width = input_shape
+    representation = RepresentationNetwork(
+        input_channels,
+        latent_channels,
+        (height, width),
+    ).to(device)
+    dynamics = DynamicsModel(
+        latent_channels,
+        action_dim,
+        latent_channels,
+    ).to(device)
+    prediction = PredictionNetwork(
+        representation.latent_shape,
+        action_dim,
+        latent_channels,
+    ).to(device)
+    return representation, dynamics, prediction
+
+
 def companion_checkpoint_path(path, kind):
     path = Path(path)
+    if path.stem == "best" and kind in {"latest", "final"}:
+        return path.with_name(kind + path.suffix)
     return path.with_name(path.stem + f"_{kind}" + path.suffix)
 
 
@@ -271,6 +317,7 @@ def save_latent_checkpoint(path, representation, dynamics, prediction, metadata=
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "checkpoint_version": CHECKPOINT_VERSION,
+        "checkpoint_format": CHECKPOINT_FORMAT,
         "representation_state_dict": representation.state_dict(),
         "dynamics_state_dict": dynamics.state_dict(),
         "prediction_state_dict": prediction.state_dict(),
@@ -308,44 +355,30 @@ def save_latent_checkpoint(path, representation, dynamics, prediction, metadata=
 
 
 def load_latent_checkpoint(path, device=None, allow_legacy_policy_targets=False):
+    del allow_legacy_policy_targets
     device = device or torch.device("cpu")
     data = torch.load(path, map_location=device, weights_only=False)
     version = data.get("checkpoint_version", data.get("training_version"))
-    if version != CHECKPOINT_VERSION:
-        if version in (12, 13) and allow_legacy_policy_targets:
-            pass
-        elif version == 13:
-            raise ValueError(
-                "incompatible legacy MuZero checkpoint version 13; expected "
-                f"{CHECKPOINT_VERSION}. Version 13 trains on unmasked policy "
-                "targets from the untrained warm-up search and cannot be resumed "
-                "under masked warm-up training; start a fresh run."
-            )
-        elif version == 12:
-            raise ValueError(
-                "incompatible legacy MuZero checkpoint version 12; expected "
-                f"{CHECKPOINT_VERSION}. Version 12 replay stores "
-                "temperature-sharpened policy targets and must not be resumed "
-                "under raw-visit-count training; start a fresh run."
-            )
-        else:
-            raise ValueError(
-                f"incompatible legacy MuZero checkpoint version {version}; expected "
-                f"{CHECKPOINT_VERSION}. Version 11 and older checkpoints use "
-                "incompatible flattened, terminal-head, or globally pooled "
-                "prediction architectures; start a fresh run."
-            )
-    if version == CHECKPOINT_VERSION and data.get("policy_target_mode") != POLICY_TARGET_MODE:
+    checkpoint_format = data.get("checkpoint_format")
+    if version != CHECKPOINT_VERSION or checkpoint_format != CHECKPOINT_FORMAT:
+        raise ValueError(
+            "incompatible MuZero checkpoint: expected native MinAtar format "
+            f"{CHECKPOINT_FORMAT!r} version {CHECKPOINT_VERSION}, got format "
+            f"{checkpoint_format!r} version {version!r}. Legacy screenshot "
+            "checkpoints cannot be loaded or partially reused; start a fresh "
+            "native-MinAtar run."
+        )
+    if data.get("policy_target_mode") != POLICY_TARGET_MODE:
         raise ValueError(
             "checkpoint policy-target metadata is missing or incompatible; "
             f"expected {POLICY_TARGET_MODE!r}"
         )
-    if version == CHECKPOINT_VERSION and data.get("warmup_policy_mode") != WARMUP_POLICY_MODE:
+    if data.get("warmup_policy_mode") != WARMUP_POLICY_MODE:
         raise ValueError(
             "checkpoint warm-up policy metadata is missing or incompatible; "
             f"expected {WARMUP_POLICY_MODE!r}"
         )
-    representation = ImageRepresentationNetwork(
+    representation = RepresentationNetwork(
         data["input_channels"],
         data["latent_channels"],
         tuple(data["observation_shape"]),
@@ -376,28 +409,32 @@ def load_latent_checkpoint(path, device=None, allow_legacy_policy_targets=False)
 
 
 def evaluate(
-    env_id,
+    game,
     representation,
     prediction,
     mcts,
     episodes,
     max_steps,
-    image_size,
-    stack_size,
+    history_length,
     seeds,
     use_mcts=True,
+    sticky_action_prob=0.1,
+    difficulty_ramping=True,
 ):
     """Evaluate without root noise; MCTS action temperature is always zero."""
-    env = make_image_env(
-        env_id,
-        ScreenshotConfig(width=image_size, height=image_size),
+    env = make_minatar_env(
+        game,
+        sticky_action_prob=sticky_action_prob,
+        difficulty_ramping=difficulty_ramping,
     )
     scores = []
+    numpy_random_state = np.random.get_state()
     try:
         for seed in seeds[:episodes]:
+            np.random.seed(int(seed))
             frame, _ = env.reset(seed=seed)
-            stack = FrameStack(stack_size, (1, image_size, image_size))
-            observation = stack.reset(frame)
+            history = ObservationHistory(history_length, frame.shape)
+            observation = history.reset(frame)
             score = 0.0
             for _ in range(max_steps):
                 latent = representation.encode(observation)
@@ -407,12 +444,13 @@ def evaluate(
                 else:
                     action = int(np.argmax(prediction.predict(latent)[0]))
                 frame, reward, terminated, truncated, _ = env.step(action)
-                observation = stack.append(frame)
+                observation = history.append(frame)
                 score += reward
                 if terminated or truncated:
                     break
             scores.append(score)
     finally:
+        np.random.set_state(numpy_random_state)
         env.close()
     return float(np.mean(scores)), scores
 
@@ -422,8 +460,7 @@ def validate_training_arguments(**arguments):
     positive_integer_names = (
         "episodes",
         "max_steps",
-        "image_size",
-        "stack_size",
+        "history_length",
         "latent_channels",
         "batch_size",
         "buffer_capacity",
@@ -472,6 +509,8 @@ def validate_training_arguments(**arguments):
         raise ValueError("root_dirichlet_alpha must be positive")
     if not 0 <= arguments["root_exploration_fraction"] <= 1:
         raise ValueError("root_exploration_fraction must be in [0, 1]")
+    if not 0 <= arguments["sticky_action_prob"] <= 1:
+        raise ValueError("sticky_action_prob must be in [0, 1]")
     temperatures = (
         arguments["temperature_initial"],
         arguments["temperature_middle"],
@@ -487,12 +526,11 @@ def validate_training_arguments(**arguments):
         )
 
 
-def train_latent_muzero(
-    env_id="CartPole-v1",
+def train_muzero(
+    game="breakout",
     episodes=10,
-    max_steps=500,
-    image_size=32,
-    stack_size=5,
+    max_steps=2500,
+    history_length=1,
     latent_channels=32,
     simulations=25,
     batch_size=32,
@@ -524,28 +562,40 @@ def train_latent_muzero(
     temperature_middle_episodes=500,
     evaluation_interval=10,
     evaluation_episodes=3,
-    checkpoint_path="checkpoints/legacy_muzero/cartpole_policy_v14.pt",
+    checkpoint_path=None,
+    reward_plot_path=None,
     reuse_checkpoint=False,
+    sticky_action_prob=0.1,
+    difficulty_ramping=True,
     seed=0,
     device=None,
 ):
+    checkpoint_path = Path(checkpoint_path or default_checkpoint_path(game))
+    reward_plot_path = Path(reward_plot_path or default_reward_plot_path(game))
     configuration = dict(locals())
     configuration.pop("device")
+    configuration["checkpoint_path"] = str(checkpoint_path)
+    configuration["reward_plot_path"] = str(reward_plot_path)
     validate_training_arguments(**configuration)
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    env = make_image_env(
-        env_id,
-        ScreenshotConfig(width=image_size, height=image_size),
+    env = make_minatar_env(
+        game,
+        sticky_action_prob=sticky_action_prob,
+        difficulty_ramping=difficulty_ramping,
     )
-    if not hasattr(env.action_space, "n"):
-        env.close()
-        raise ValueError(f"{env_id} must have a discrete action space")
     action_dim = int(env.action_space.n)
     env.action_space.seed(seed)
+    base_observation_shape = tuple(env.base_observation_shape)
+    input_shape = (
+        base_observation_shape[0] * history_length,
+        base_observation_shape[1],
+        base_observation_shape[2],
+    )
+    resolved_env_id = env.env_id
 
     resume_data = None
     if reuse_checkpoint:
@@ -574,8 +624,8 @@ def train_latent_muzero(
                 f"{', '.join(sorted(missing))}"
             )
         expected_architecture = (
-            stack_size,
-            (image_size, image_size),
+            input_shape[0],
+            input_shape[1:],
             latent_channels,
             action_dim,
         )
@@ -592,6 +642,21 @@ def train_latent_muzero(
                 f"configuration: checkpoint={checkpoint_architecture}, "
                 f"requested={expected_architecture}"
             )
+        previous_base_shape = tuple(resume_data.get("base_observation_shape", ()))
+        previous_history_length = resume_data.get("history_length")
+        previous_env_id = resume_data.get("env_id")
+        if (
+            previous_base_shape != base_observation_shape
+            or previous_history_length != history_length
+            or previous_env_id != resolved_env_id
+        ):
+            env.close()
+            raise ValueError(
+                "checkpoint game/native-observation history does not match the "
+                "requested environment: checkpoint="
+                f"{(previous_env_id, previous_base_shape, previous_history_length)}, "
+                f"requested={(resolved_env_id, base_observation_shape, history_length)}"
+            )
         previous_config = resume_data.get("training_config", {})
         for immutable_name in ("discount", "reward_scale"):
             previous = previous_config.get(immutable_name)
@@ -605,17 +670,12 @@ def train_latent_muzero(
                     f"({previous} -> {configuration[immutable_name]})"
                 )
     else:
-        representation = ImageRepresentationNetwork(
-            stack_size,
-            latent_channels,
-            (image_size, image_size),
-        ).to(device)
-        dynamics = DynamicsModel(latent_channels, action_dim, latent_channels).to(device)
-        prediction = PredictionNetwork(
-            representation.latent_shape,
+        representation, dynamics, prediction = build_networks(
+            input_shape,
             action_dim,
             latent_channels,
-        ).to(device)
+            device,
+        )
 
     optimizer = torch.optim.Adam(
         [
@@ -626,7 +686,7 @@ def train_latent_muzero(
         lr=learning_rate,
         weight_decay=weight_decay,
     )
-    replay = LatentReplayBuffer(buffer_capacity)
+    replay = EpisodeReplayBuffer(buffer_capacity)
 
     if resume_data is not None:
         optimizer.load_state_dict(resume_data["optimizer_state_dict"])
@@ -679,6 +739,9 @@ def train_latent_muzero(
     )
     training_config = {
         **configuration,
+        "env_id": resolved_env_id,
+        "base_observation_shape": base_observation_shape,
+        "input_shape": input_shape,
         "action_dim": action_dim,
         "update_mode": update_mode,
     }
@@ -692,6 +755,16 @@ def train_latent_muzero(
             "reward_scale": reward_scale,
             "update_mode": update_mode,
             "training_config": training_config,
+            "game": game,
+            "env_id": resolved_env_id,
+            "base_observation_shape": base_observation_shape,
+            "native_channel_order": tuple(range(base_observation_shape[0])),
+            "history_length": history_length,
+            "action_set_variant": (
+                "minimal_v1" if resolved_env_id.lower().endswith("-v1") else "full_v0"
+            ),
+            "sticky_action_prob": sticky_action_prob,
+            "difficulty_ramping": difficulty_ramping,
             "optimizer_state_dict": optimizer.state_dict(),
             "replay_state": replay.state_dict(),
             "completed_episodes": completed,
@@ -702,8 +775,9 @@ def train_latent_muzero(
 
     final_episode = completed_episodes + episodes
     print(
-        f"training {env_id}: episodes={completed_episodes + 1}-{final_episode} "
-        f"simulations={simulations} device={device}",
+        f"training {resolved_env_id}: episodes={completed_episodes + 1}-{final_episode} "
+        f"input={input_shape} actions={action_dim} simulations={simulations} "
+        f"device={device}",
         flush=True,
     )
     print(f"learner updates: {update_mode}", flush=True)
@@ -711,8 +785,8 @@ def train_latent_muzero(
     try:
         for episode_index in range(completed_episodes, final_episode):
             frame, _ = env.reset(seed=seed + episode_index)
-            stack = FrameStack(stack_size, (1, image_size, image_size))
-            observation = stack.reset(frame)
+            history_stack = ObservationHistory(history_length, base_observation_shape)
+            observation = history_stack.reset(frame)
             trajectory = []
             is_warmup = episode_index < warmup_episodes
             temperature = temperature_for_episode(
@@ -724,7 +798,7 @@ def train_latent_muzero(
                 middle_episodes=temperature_middle_episodes,
             )
 
-            for _ in range(max_steps):
+            for step_index in range(max_steps):
                 latent = representation.encode(observation)
                 root = mcts.search(latent, add_exploration_noise=True)
                 if is_warmup:
@@ -733,6 +807,8 @@ def train_latent_muzero(
                 else:
                     action, policy = select_training_action(root, temperature)
                 next_frame, raw_reward, terminated, truncated, _ = env.step(action)
+                if step_index + 1 == max_steps and not (terminated or truncated):
+                    truncated = True
                 trajectory.append(
                     {
                         "observation": observation,
@@ -745,7 +821,7 @@ def train_latent_muzero(
                         "truncated": truncated,
                     }
                 )
-                observation = stack.append(next_frame)
+                observation = history_stack.append(next_frame)
                 if terminated or truncated:
                     break
 
@@ -798,15 +874,16 @@ def train_latent_muzero(
                 or episode_index + 1 == final_episode
             ):
                 evaluation_score, _ = evaluate(
-                    env_id,
+                    game,
                     representation,
                     prediction,
                     mcts,
                     evaluation_episodes,
                     max_steps,
-                    image_size,
-                    stack_size,
+                    history_length,
                     [seed + 10000 + i for i in range(evaluation_episodes)],
+                    sticky_action_prob=sticky_action_prob,
+                    difficulty_ramping=difficulty_ramping,
                 )
                 history["evaluations"].append(
                     (episode_index + 1, evaluation_score)
@@ -868,21 +945,30 @@ def train_latent_muzero(
     )
     reward_plot = save_reward_plot(
         history,
-        Path(checkpoint_path).with_name(Path(checkpoint_path).stem + "_rewards.png"),
+        reward_plot_path,
     )
     print(f"saved reward plot: {reward_plot}", flush=True)
     return representation, dynamics, prediction, history
 
 
+# Descriptive alias retained for callers familiar with the legacy module.
+train_latent_muzero = train_muzero
+
+
 def build_argument_parser():
     parser = argparse.ArgumentParser(
-        description="Train small spatial vanilla MuZero from image histories."
+        description="Train small spatial vanilla MuZero on native MinAtar grids."
     )
-    parser.add_argument("--env", dest="env_id", default="CartPole-v1")
+    parser.add_argument(
+        "--game",
+        "--env",
+        dest="game",
+        default="breakout",
+        help="short name (breakout) or full id (MinAtar/Breakout-v1)",
+    )
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--max-steps", type=int, default=500)
-    parser.add_argument("--image-size", type=int, default=32)
-    parser.add_argument("--stack-size", type=int, default=5)
+    parser.add_argument("--max-steps", type=int, default=2500)
+    parser.add_argument("--history-length", type=int, default=1)
     parser.add_argument("--latent-channels", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--buffer-capacity", type=int, default=20000)
@@ -916,20 +1002,34 @@ def build_argument_parser():
     parser.add_argument("--evaluation-episodes", type=int, default=3)
     parser.add_argument(
         "--checkpoint-path",
-        default="checkpoints/legacy_muzero/cartpole_policy_v14.pt",
+        type=Path,
+        help="best checkpoint path; default: checkpoints/muzero/<game>/best.pt",
+    )
+    parser.add_argument(
+        "--reward-plot-path",
+        type=Path,
+        help="default: artifacts/muzero/training/<game>/rewards.png",
     )
     parser.add_argument(
         "--reuse-checkpoint",
         action="store_true",
         help="continue latest state while preserving optimizer/replay/history",
     )
+    parser.add_argument("--sticky-action-prob", type=float, default=0.1)
+    parser.add_argument(
+        "--no-difficulty-ramping",
+        action="store_false",
+        dest="difficulty_ramping",
+        help="disable MinAtar's built-in difficulty ramping",
+    )
+    parser.set_defaults(difficulty_ramping=True)
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
 
 def main():
     arguments = vars(build_argument_parser().parse_args())
-    _, _, _, history = train_latent_muzero(**arguments)
+    _, _, _, history = train_muzero(**arguments)
     print(
         f"training complete: episodes={len(history['scores'])} "
         f"last_score={history['scores'][-1]:.1f}",

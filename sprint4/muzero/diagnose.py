@@ -1,4 +1,4 @@
-"""Diagnostics and real-environment GIF recording for spatial MuZero."""
+"""Diagnostics and synchronized native-MinAtar GIF recording for MuZero."""
 
 import argparse
 import json
@@ -8,9 +8,10 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from .image_observation import FrameStack, ScreenshotConfig, make_image_env
+from .buffers import EpisodeReplayBuffer
+from .environment import ObservationHistory, make_minatar_env, minatar_env_id
 from .mcts import visit_count_policy
-from .train_policy_value import evaluate, load_latent_checkpoint, make_latent_mcts
+from .train import evaluate, load_latent_checkpoint, make_latent_mcts
 
 
 def entropy(probabilities):
@@ -106,16 +107,18 @@ def _rgb_image(frame, output_width):
     return image
 
 
-def _observation_history_panel(
+def _observation_planes_panel(
     observation,
     output_height,
+    base_channels,
+    history_length,
     real_frame_count=None,
 ):
-    """Render the exact channel-first grayscale history consumed by the model."""
+    """Render every exact native feature plane consumed by representation h."""
     history = np.asarray(observation)
     if history.ndim != 3 or history.shape[0] <= 0:
         raise ValueError(
-            "GIF observation history must have shape [stack, height, width]"
+            "GIF observation must have shape [channels, height, width]"
         )
     if not np.isfinite(history).all():
         raise ValueError("GIF observation history must contain only finite values")
@@ -123,38 +126,54 @@ def _observation_history_panel(
     output_height = int(output_height)
     if output_height <= 0:
         raise ValueError("GIF observation panel height must be positive")
-    stack_size = int(history.shape[0])
+    base_channels = int(base_channels)
+    history_length = int(history_length)
+    if base_channels <= 0 or history_length <= 0:
+        raise ValueError("base_channels and history_length must be positive")
+    plane_count = base_channels * history_length
+    if history.shape[0] != plane_count:
+        raise ValueError(
+            f"expected {plane_count} input planes, got {history.shape[0]}"
+        )
     if real_frame_count is None:
-        real_frame_count = stack_size
+        real_frame_count = history_length
     real_frame_count = int(real_frame_count)
-    if not 0 <= real_frame_count <= stack_size:
-        raise ValueError("real_frame_count must be between zero and stack size")
+    if not 0 <= real_frame_count <= history_length:
+        raise ValueError("real_frame_count must be between zero and history length")
 
     margin = 6
     header_height = 20
-    gap = 3
-    label_width = 30
-    available_height = (
-        output_height
-        - header_height
-        - 2 * margin
-        - gap * (stack_size - 1)
+    gap = 5
+    columns = max(1, int(np.ceil(np.sqrt(plane_count))))
+    rows = int(np.ceil(plane_count / columns))
+    panel_width = output_height
+    tile_size = max(
+        1,
+        min(
+            (panel_width - 2 * margin - gap * (columns - 1)) // columns,
+            (output_height - header_height - 2 * margin - gap * (rows - 1)) // rows,
+        ),
     )
-    tile_size = max(1, available_height // stack_size)
-    panel_width = margin + label_width + tile_size + margin
     panel = Image.new("RGB", (panel_width, output_height), (18, 18, 18))
     draw = ImageDraw.Draw(panel)
     font = ImageFont.load_default()
-    draw.text((margin, 4), "model input", fill=(255, 255, 255), font=font)
+    draw.text(
+        (margin, 4),
+        "exact model input: native feature planes",
+        fill=(255, 255, 255),
+        font=font,
+    )
 
-    padding_count = stack_size - real_frame_count
+    padding_count = history_length - real_frame_count
     for index, frame in enumerate(history):
         pixels = np.rint(np.clip(frame.astype(np.float32), 0.0, 1.0) * 255.0)
         tile = Image.fromarray(pixels.astype(np.uint8), "L").convert("RGB")
         tile = tile.resize((tile_size, tile_size), Image.Resampling.NEAREST)
-        y = header_height + margin + index * (tile_size + gap)
-        x = margin + label_width
-        offset = stack_size - 1 - index
+        row, column = divmod(index, columns)
+        x = margin + column * (tile_size + gap)
+        y = header_height + margin + row * (tile_size + gap)
+        history_index, channel_index = divmod(index, base_channels)
+        offset = history_length - 1 - history_index
         border = (106, 214, 136) if offset == 0 else (95, 95, 95)
         draw.rectangle(
             (x - 1, y - 1, x + tile_size, y + tile_size),
@@ -163,9 +182,15 @@ def _observation_history_panel(
         panel.paste(tile, (x, y))
 
         time_label = "t" if offset == 0 else f"t-{offset}"
-        label = "pad" if index < padding_count else time_label
+        label = (
+            f"pad/c{channel_index}"
+            if history_index < padding_count
+            else f"{time_label}/c{channel_index}"
+        )
+        label_y = max(header_height, y + tile_size - 11)
+        draw.rectangle((x, label_y, x + tile_size, y + tile_size), fill=(0, 0, 0))
         draw.text(
-            (margin, y + max(0, (tile_size - 10) // 2)),
+            (x + 2, label_y),
             label,
             fill=(210, 210, 210),
             font=font,
@@ -178,6 +203,8 @@ def _annotate_frame(
     output_width,
     lines,
     observation=None,
+    base_channels=None,
+    history_length=1,
     real_frame_count=None,
 ):
     image = _rgb_image(frame, output_width)
@@ -196,9 +223,11 @@ def _annotate_frame(
     if observation is None:
         return image
 
-    history_panel = _observation_history_panel(
+    history_panel = _observation_planes_panel(
         observation,
         image.height,
+        base_channels=base_channels,
+        history_length=history_length,
         real_frame_count=real_frame_count,
     )
     composite = Image.new(
@@ -218,19 +247,21 @@ def _format_policy(probabilities):
 @torch.no_grad()
 def record_episode_gif(
     output_path,
-    env_id,
+    game,
     representation,
     prediction,
     mcts,
-    observation_shape,
-    stack_size,
+    base_observation_shape,
+    history_length,
     mode="mcts",
     seed=0,
-    max_steps=500,
+    max_steps=2500,
     fps=20,
     output_width=480,
+    sticky_action_prob=0.1,
+    difficulty_ramping=True,
 ):
-    """Record real RGB play beside the exact live grayscale model input."""
+    """Record rendered play beside every exact live native input plane."""
     if mode not in {"raw", "mcts"}:
         raise ValueError("GIF mode must be 'raw' or 'mcts'")
     if int(max_steps) <= 0:
@@ -239,16 +270,23 @@ def record_episode_gif(
         raise ValueError("GIF fps must be positive")
     if int(output_width) <= 0:
         raise ValueError("GIF output_width must be positive")
-    observation_shape = tuple(int(size) for size in observation_shape)
-    if len(observation_shape) != 2 or any(size <= 0 for size in observation_shape):
-        raise ValueError("observation_shape must be positive (height, width)")
+    base_observation_shape = tuple(int(size) for size in base_observation_shape)
+    if len(base_observation_shape) != 3 or any(
+        size <= 0 for size in base_observation_shape
+    ):
+        raise ValueError(
+            "base_observation_shape must be positive (channels, height, width)"
+        )
+    if int(history_length) <= 0:
+        raise ValueError("history_length must be positive")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    height, width = observation_shape
-    env = make_image_env(
-        env_id,
-        ScreenshotConfig(width=width, height=height),
+    base_channels = base_observation_shape[0]
+    env = make_minatar_env(
+        game,
+        sticky_action_prob=sticky_action_prob,
+        difficulty_ramping=difficulty_ramping,
     )
     numpy_random_state = np.random.get_state()
     np.random.seed(int(seed))
@@ -260,8 +298,11 @@ def record_episode_gif(
         if hasattr(env.action_space, "seed"):
             env.action_space.seed(int(seed))
         frame, _ = env.reset(seed=int(seed))
-        stack = FrameStack(int(stack_size), (1, height, width))
-        observation = stack.reset(frame)
+        history_stack = ObservationHistory(
+            int(history_length),
+            base_observation_shape,
+        )
+        observation = history_stack.reset(frame)
 
         for step in range(int(max_steps)):
             latent = representation.encode(observation)
@@ -291,12 +332,14 @@ def record_episode_gif(
                     output_width,
                     lines,
                     observation=observation,
-                    real_frame_count=stack.real_frame_count,
+                    base_channels=base_channels,
+                    history_length=history_length,
+                    real_frame_count=history_stack.real_frame_count,
                 )
             )
 
             frame, reward, terminated, truncated, _ = env.step(action)
-            observation = stack.append(frame)
+            observation = history_stack.append(frame)
             score += float(reward)
             steps = step + 1
             if terminated or truncated:
@@ -312,7 +355,9 @@ def record_episode_gif(
                     f"final score={score:.1f} status={status}",
                 ],
                 observation=observation,
-                real_frame_count=stack.real_frame_count,
+                base_channels=base_channels,
+                history_length=history_length,
+                real_frame_count=history_stack.real_frame_count,
             )
         )
     finally:
@@ -338,14 +383,22 @@ def record_episode_gif(
         "frames": len(frames),
         "gameplay_width": int(output_width),
         "gif_width": int(frames[0].width),
-        "observation_history": True,
+        "native_feature_planes": int(base_channels),
+        "history_length": int(history_length),
     }
 
 
 def build_argument_parser():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint")
-    parser.add_argument("--replay", help="torch-saved LatentReplayBuffer")
+    parser = argparse.ArgumentParser(
+        description="Evaluate and visualize a native-MinAtar MuZero checkpoint."
+    )
+    parser.add_argument("checkpoint_positional", nargs="?")
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument(
+        "--game",
+        help="override/check the checkpoint game (for example breakout)",
+    )
+    parser.add_argument("--replay", help="optional torch-saved EpisodeReplayBuffer")
     parser.add_argument("--simulations", type=int, default=25)
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
@@ -372,21 +425,42 @@ def build_argument_parser():
         default=480,
         help="RGB gameplay-pane width; the model-input panel is added beside it",
     )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        help="optionally save the printed diagnostic report as JSON",
+    )
     return parser
 
 
 def main():
     args = build_argument_parser().parse_args()
+    checkpoint_path = args.checkpoint or args.checkpoint_positional
+    if checkpoint_path is None:
+        raise SystemExit("provide a checkpoint path or --checkpoint PATH")
     device = torch.device("cpu")
     representation, dynamics, prediction, metadata = load_latent_checkpoint(
-        args.checkpoint,
+        checkpoint_path,
         device,
-        allow_legacy_policy_targets=True,
     )
     action_dim = metadata["action_dim"]
     training_config = metadata.get("training_config", {})
-    env_id = training_config.get("env_id", "CartPole-v1")
-    max_steps = int(training_config.get("max_steps", 500))
+    game = args.game or metadata.get("game") or metadata.get("env_id")
+    if game is None:
+        raise ValueError("checkpoint does not contain a MinAtar game id")
+    checkpoint_env_id = metadata.get("env_id")
+    if checkpoint_env_id is not None and minatar_env_id(game) != checkpoint_env_id:
+        raise ValueError(
+            f"requested game {minatar_env_id(game)} does not match checkpoint "
+            f"environment {checkpoint_env_id}"
+        )
+    max_steps = int(training_config.get("max_steps", 2500))
+    history_length = int(metadata.get("history_length", 1))
+    base_observation_shape = tuple(metadata.get("base_observation_shape", ()))
+    if len(base_observation_shape) != 3:
+        raise ValueError("checkpoint lacks a valid native base_observation_shape")
+    sticky_action_prob = float(metadata.get("sticky_action_prob", 0.1))
+    difficulty_ramping = bool(metadata.get("difficulty_ramping", True))
     mcts = make_latent_mcts(
         dynamics,
         prediction,
@@ -405,11 +479,10 @@ def main():
 
     # Policy-change statistics use encoded replay roots when available and a
     # deterministic blank encoded root otherwise.
-    replay = (
-        torch.load(args.replay, weights_only=False)
-        if args.replay
-        else None
-    )
+    replay = torch.load(args.replay, weights_only=False) if args.replay else None
+    if replay is None and "replay_state" in metadata:
+        replay = EpisodeReplayBuffer()
+        replay.load_state_dict(metadata["replay_state"])
     roots = (
         []
         if replay is None
@@ -432,7 +505,17 @@ def main():
             )
         )
 
-    report = policy_search_metrics(raw_policies, visit_policies)
+    report = {
+        "checkpoint": str(checkpoint_path),
+        "game": game,
+        "env_id": checkpoint_env_id,
+        "base_observation_shape": base_observation_shape,
+        "history_length": history_length,
+        "input_channels": metadata["input_channels"],
+        "action_dim": action_dim,
+        "simulations": args.simulations,
+        **policy_search_metrics(raw_policies, visit_policies),
+    }
     if replay is not None:
         report.update(
             diagnose_batch(
@@ -440,42 +523,38 @@ def main():
                 dynamics,
                 prediction,
                 replay,
-                5,
+                int(training_config.get("unroll_steps", 5)),
                 action_dim,
                 device,
             )
         )
 
     seeds = [args.seed + episode for episode in range(args.episodes)]
-    image_height, image_width = metadata["observation_shape"]
-    if image_height != image_width:
-        raise ValueError(
-            "The existing screenshot evaluation helper requires a square observation; "
-            "GIF recording itself supports rectangular shapes."
-        )
     raw_score, _ = evaluate(
-        env_id,
+        game,
         representation,
         prediction,
         mcts,
         args.episodes,
         max_steps,
-        image_height,
-        metadata["input_channels"],
+        history_length,
         seeds,
         False,
+        sticky_action_prob=sticky_action_prob,
+        difficulty_ramping=difficulty_ramping,
     )
     mcts_score, _ = evaluate(
-        env_id,
+        game,
         representation,
         prediction,
         mcts,
         args.episodes,
         max_steps,
-        image_height,
-        metadata["input_channels"],
+        history_length,
         seeds,
         True,
+        sticky_action_prob=sticky_action_prob,
+        difficulty_ramping=difficulty_ramping,
     )
     report["evaluation_raw_argmax"] = raw_score
     report["evaluation_mcts_identical_seeds"] = mcts_score
@@ -483,19 +562,25 @@ def main():
     if args.record_gif is not None:
         report["recorded_gif"] = record_episode_gif(
             args.record_gif,
-            env_id,
+            game,
             representation,
             prediction,
             mcts,
-            metadata["observation_shape"],
-            metadata["input_channels"],
+            base_observation_shape,
+            history_length,
             mode=args.gif_mode,
             seed=args.seed if args.gif_seed is None else args.gif_seed,
             max_steps=max_steps if args.gif_max_steps is None else args.gif_max_steps,
             fps=args.gif_fps,
             output_width=args.gif_width,
+            sticky_action_prob=sticky_action_prob,
+            difficulty_ramping=difficulty_ramping,
         )
-    print(json.dumps(report, indent=2))
+    report_json = json.dumps(report, indent=2)
+    if args.output_json is not None:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(report_json + "\n", encoding="utf-8")
+    print(report_json)
 
 
 if __name__ == "__main__":
