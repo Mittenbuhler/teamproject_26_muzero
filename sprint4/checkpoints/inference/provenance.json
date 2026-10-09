@@ -1,0 +1,24 @@
+[
+  {
+    "file": "cartpole_state4d.pt",
+    "bytes": 246119,
+    "sha256": "6aa9b75d51dd74803c4c0775cbf36c05ac1cba8ab33613414270a778119c7628",
+    "source": {
+      "path": "checkpoints/cartpole_muzero/state4d_seed0_R9ncWC/run.pt",
+      "bytes": 17519587,
+      "sha256": "ad84499b7d9bb408dbc2cb926c4824e421a18b46d6dc9e96a0d1b88375094c39"
+    },
+    "all_network_tensors_equal": true
+  },
+  {
+    "file": "minatar_breakout.pt",
+    "bytes": 374211,
+    "sha256": "8fe10a6c10d92b59c2663f8d1b983cac973dc48586159347890646a058053d3a",
+    "source": {
+      "path": "checkpoints/minatar_muzero/breakout_screenshots/best.pt",
+      "bytes": 1086547901,
+      "sha256": "6512d52814ed6bb6fc88f04bfebe59d368ffce4f0fdc2958676af9da810eb8f2"
+    },
+    "all_network_tensors_equal": true
+  }
+]

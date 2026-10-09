@@ -1,4 +1,17 @@
-# Modular real-state CartPole MCTS
+# Modular real-state CartPole MCTS — testing version
+
+This package is retained to test the planning components independently. Its
+intent is to compare exact physics and random rollouts with learned dynamics,
+policy priors and value estimates, including all eight component combinations.
+It has no learned representation and trains the components separately.
+
+The main project results are [CartPole MuZero](../cartpole_muzero/README.md)
+and [MinAtar MuZero](../minatar_muzero/README.md), which jointly train a latent
+planning system. See [central commands](../COMMANDS.md) for setup and test
+destinations, and [development context](../docs/DEVELOPMENT.md) for the role of
+this parallel testbed. The detailed examples below are specialist experiments;
+training without an explicit checkpoint directory writes the default testbed
+checkpoints. Use a fresh directory when preserving previous runs.
 
 ## Command overview
 
@@ -54,9 +67,9 @@ python -m state_mcts.run_state_mcts_experiment \
   --simulations 24 \
   --eval-episodes 2
 
-# Run focused tests or the complete state/legacy regression suite
+# Run focused tests or the complete state/CartPole MuZero regression suite
 python -m unittest -v state_mcts.tests.test_experiment state_mcts.tests.test_dashboard
-python -m unittest -v state_mcts.tests.test_experiment state_mcts.tests.test_dashboard legacy_muzero.tests.test_pipeline
+python -m unittest -v state_mcts.tests.test_experiment state_mcts.tests.test_dashboard cartpole_muzero.tests.test_pipeline
 
 # Rebuild and open the read-only dashboard
 python -m state_mcts.dashboard
@@ -71,7 +84,7 @@ Stop the local dashboard server with `Ctrl+C`. Reports are append-only by
 default; use a distinct `--report-path` when you want a separate experiment
 family rather than another run in the existing history.
 
-This experiment is deliberately separate from the image/latent MuZero path. It
+This experiment is deliberately separate from both final MuZero packages. It
 uses the real four-value observation returned by `CartPole-v1`:
 
 `[cart position, cart velocity, pole angle, pole angular velocity]`
@@ -136,9 +149,11 @@ silent mismatch.
 combination. It controls MCTS tree lookahead and the length of random leaf
 rollouts. If dynamics is selected for training, it additionally controls the
 dynamics multi-step horizon. It does **not** alter policy labels or value
-training targets. Value targets use the fixed episode horizon (`--max-steps`)
-and are converted onto the current search-depth scale only when MCTS evaluates
-a leaf.
+training targets. Value targets use the fixed episode horizon (`--max-steps`).
+At a leaf the prediction is clipped to `[0, 1]` and used directly; it is not
+rescaled to the remaining search horizon. Tree-edge rewards are separately
+divided by `--search-depth`, so this is a state-quality heuristic rather than
+an exactly horizon-matched return estimate.
 
 ## Policy learning
 
@@ -327,7 +342,7 @@ MCTS needs for control.
 
 ## Run
 
-From this directory:
+From `teamproject_26_muzero/sprint4`:
 
 ```bash
 python -m state_mcts.run_state_mcts_experiment --models none
@@ -338,7 +353,9 @@ python -m state_mcts.run_state_mcts_experiment --models all --ablation
 ```
 
 `--models all --ablation` trains each model once and evaluates all eight model
-subsets. Use `--reuse-checkpoints` to repeat evaluation without retraining.
+subsets. Use `--reuse-checkpoints` with a complete compatible checkpoint
+directory to repeat evaluation without retraining. Missing component files
+currently trigger training even with that flag, so check the directory first.
 Each run appends a timestamped entry to the JSON report, by default
 `artifacts/state_mcts/state_mcts_report.json`. Existing runs are never overwritten. A run
 is saved before training, after training, after each ablation, and on failure or

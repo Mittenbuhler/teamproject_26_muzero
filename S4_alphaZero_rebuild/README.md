@@ -1,3 +1,16 @@
+# OUTDATED: early CartPole rebuild
+
+This directory is retained as project-development history. It trains separate
+state-model components and predates the final jointly trained MuZero agents.
+All existing code, checkpoints and artifacts stay at their original paths.
+
+Use [the final project](../sprint4/README.md), [current commands](../sprint4/COMMANDS.md)
+and [development guide](../sprint4/docs/DEVELOPMENT.md) for the maintained result.
+Commands below describe this old experiment and may train/replace its own
+checkpoints; they are not the current project quick start.
+
+---
+
 # CHATTest
 
 Fresh CartPole rebuild that separates the pieces you asked for:
