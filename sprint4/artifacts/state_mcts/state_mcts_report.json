@@ -3271,9 +3271,96 @@
         "value": "artifacts/state_mcts/losses/20260711T132738.457451Z-value/value.svg"
       },
       "completed_at": "2026-07-11T13:27:57.732918+00:00"
+    },
+    {
+      "run_id": "20261004T155043.107260Z-dynamics+policy+value",
+      "status": "failed",
+      "stage": "evaluation",
+      "started_at": "2026-10-04T15:50:43.107086+00:00",
+      "selected_models": [
+        "dynamics",
+        "policy",
+        "value"
+      ],
+      "training_metrics": {
+        "dynamics": {
+          "rollout_mae_h1": 0.02574039318026443,
+          "rollout_mae_h5": 0.04982401231566061,
+          "rollout_mae_h10": 0.07367121437449514,
+          "rollout_mae_h20": 0.11237275383689187,
+          "rollout_mae_h30": 0.14644958809630512,
+          "state_mae": 0.02574039318026443,
+          "training_rollout_horizon": 30.0
+        },
+        "policy": {
+          "accuracy": 0.9944238066673279
+        },
+        "value": {
+          "mae": 0.016209738329052925
+        }
+      },
+      "evaluations": {},
+      "settings": {
+        "env": "CartPole-v1",
+        "ablation": false,
+        "train_samples": 5000,
+        "train_epochs": 30,
+        "batch_size": 128,
+        "hidden_dim": 128,
+        "learning_rate": 0.001,
+        "expert_probability": 0.5,
+        "simulations": 64,
+        "search_depth": 30,
+        "bootstrap_after": 0,
+        "search_depth_controls": [
+          "MCTS tree lookahead",
+          "random leaf-rollout length",
+          "dynamics multi-step training horizon when dynamics is trained",
+          "minimum depth before learned value bootstrap when value is active"
+        ],
+        "value_target_horizon": 500,
+        "eval_episodes": 20,
+        "max_steps": 500,
+        "seed": 0,
+        "eval_seed": 10000,
+        "reuse_checkpoints": false,
+        "checkpoint_dir": "checkpoints/state_mcts/20261004_175041",
+        "loss_dir": "artifacts/state_mcts/losses",
+        "dynamics_training": {
+          "maximum_rollout_horizon": 30,
+          "horizon_source": "search_depth",
+          "curriculum": [
+            5,
+            10,
+            20,
+            30
+          ],
+          "loss": "one-step anchor plus weighted multi-step Smooth L1 bands",
+          "band_weights": {
+            "step_1": 1.0,
+            "steps_2_5": 0.5,
+            "steps_6_10": 0.25,
+            "steps_11_20": 0.125,
+            "steps_21_max": 0.0625
+          },
+          "reward": "hardcoded +1 during MCTS; reward head is not trained",
+          "terminal_handling": "mask sequence after Gym episode boundary",
+          "validation_split": "whole episodes"
+        }
+      },
+      "loss_graphs": {
+        "dynamics": "artifacts/state_mcts/losses/20261004T155043.107260Z-dynamics+policy+value/dynamics.svg",
+        "policy": "artifacts/state_mcts/losses/20261004T155043.107260Z-dynamics+policy+value/policy.svg",
+        "value": "artifacts/state_mcts/losses/20261004T155043.107260Z-dynamics+policy+value/value.svg"
+      },
+      "error": {
+        "type": "RuntimeError",
+        "message": "Numpy is not available"
+      },
+      "finished_at": "2026-10-04T15:51:18.012640+00:00"
     }
   ],
-  "updated_at": "2026-07-11T13:27:57.733376+00:00",
+  "updated_at": "2026-10-04T15:51:18.013436+00:00",
   "dashboard_order": [
     "20260705T223311.370535Z-dynamics",
     "20260705T223529.980589Z-dynamics",
