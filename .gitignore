@@ -1,0 +1,10 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS metadata
+.DS_Store
+
+# Generated training-loss plots
+sprint4/artifacts/*/losses/**/*.svg

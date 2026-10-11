@@ -1,3 +1,24 @@
+# Installation: current result branch
+
+Use [sprint4/COMMANDS.md](sprint4/COMMANDS.md) for the maintained setup and all
+run commands. From the repository root:
+
+```bash
+cd sprint4
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m scripts.check_checkpoints --verify
+```
+
+On Windows, use `py -3 -m venv .venv` and `.venv\Scripts\Activate.ps1`.
+Git is installed separately from Python packages. The root dependency list and
+instructions below are retained historical material, not current setup advice.
+
+---
+
+## OUTDATED original installation notes
+
 # Create a virtual environment with Conda (and install Python)
 - Install miniconda (or Anaconda)
   - Download the installer for your operating system at: https://docs.conda.io/projects/miniconda/en/latest/
