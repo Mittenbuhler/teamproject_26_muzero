@@ -1,6 +1,6 @@
 # MuZero team project: final results
 
-The main result branch is `MuZero-for-MinAtar`. Start in **[sprint4](sprint4/README.md)**:
+Start in **[sprint4](sprint4/README.md)**:
 CartPole learns from four physical state values; MinAtar Breakout learns from a
 history of rendered RGB screenshots. Both jointly train representation,
 dynamics and prediction networks and use latent-state MCTS.
